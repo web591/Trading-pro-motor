@@ -4,108 +4,77 @@ import yfinance as yf
 import time
 import config
 
-def get_db_connection():
-    return mysql.connector.connect(**config.DB_CONFIG)
-
 def buscar_mapeo_profundo(ticker_raw):
-    """
-    Intenta encontrar el mejor mapeo para un ticker nuevo.
-    """
-    clean = ticker_raw.replace("USDT", "").replace("USDC", "").strip().upper()
+    ticker_raw = ticker_raw.strip().upper()
     
+    # CASO ESPECIAL: BTCUSDC o similares
+    es_par_estable = ticker_raw.endswith('USDC')
+    if es_par_estable:
+        clean = ticker_raw
+    else:
+        clean = ticker_raw.replace("USDT", "").replace("USDC", "")
+
     info = {
         'binance_spot': None,
         'binance_usdt_future': None,
-        'binance_coin_future': None,
         'bingx_perp': None,
         'yahoo_sym': None,
         'prioridad': 'yahoo_sym'
     }
 
-    # 1. Intento en Binance (Spot y Futuros)
-    try:
-        s_spot = f"{clean}USDT"
-        r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={s_spot}", timeout=3).json()
-        if 'price' in r:
-            info['binance_spot'] = s_spot
-            info['binance_usdt_future'] = s_spot
-            info['prioridad'] = 'binance_usdt_future'
-        
-        # Probar Coin-M si es una crypto mayor
-        s_coin = f"{clean}USD_PERP"
-        r_c = requests.get(f"https://dapi.binance.com/dapi/v1/ticker/price?symbol={s_coin}", timeout=3).json()
-        if isinstance(r_c, list) or 'price' in r_c:
-            info['binance_coin_future'] = s_coin
-    except: pass
-
-    # 2. Intento en BingX (Perpetuos Acciones/Cripto)
-    try:
-        s_bingx = f"{clean}-USDT"
-        r = requests.get(f"https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol={s_bingx}", timeout=3).json()
-        if r.get('code') == 0:
-            info['bingx_perp'] = s_bingx
-            if not info['binance_spot']: info['prioridad'] = 'bingx_perp'
-    except: pass
-
-    # 3. Intento en Yahoo Finance (Forex, Índices, Acciones)
-    variaciones = [clean, f"{clean}-USD", f"{clean}=F", f"^{clean}", f"{clean}.MX"]
-    for v in variaciones:
+    # 1. CASO AT&T y Acciones de 1 letra: Forzar Yahoo primero para evitar conflictos con Cripto
+    if len(clean) <= 2 and not es_par_estable:
+        print(f"   ⚠️ Detectada acción/índice corto: {clean}. Priorizando Yahoo.")
         try:
-            t = yf.Ticker(v)
+            t = yf.Ticker(clean)
             if t.fast_info['last_price'] > 0:
-                info['yahoo_sym'] = v
-                break
-        except: continue
+                info['yahoo_sym'] = clean
+                info['prioridad'] = 'yahoo_sym'
+                return info
+        except: pass
+
+    # 2. Búsqueda en Binance (Solo si no es una acción protegida)
+    try:
+        s_binance = clean if es_par_estable else f"{clean}USDT"
+        r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={s_binance}", timeout=3).json()
+        if 'price' in r:
+            info['binance_spot'] = s_binance
+            info['prioridad'] = 'binance_spot'
+    except: pass
+
+    # 3. Yahoo Finance para Commodities e Índices
+    mapeos_fijos = {
+        'GOLD': 'GC=F', 'SILVER': 'SI=F', 'WTI': 'CL=F', 
+        'DAX': '^GDAXI', 'SP500': '^GSPC', 'EURUSD': 'EURUSD=X'
+    }
     
+    if clean in mapeos_fijos:
+        info['yahoo_sym'] = mapeos_fijos[clean]
+        info['prioridad'] = 'yahoo_sym'
+    else:
+        # Búsqueda genérica en Yahoo si no se encontró en Binance
+        if not info['binance_spot']:
+            try:
+                t = yf.Ticker(clean)
+                if t.fast_info['last_price'] > 0:
+                    info['yahoo_sym'] = clean
+            except: pass
+
     return info
 
 def procesar_pendientes():
-    print("🚀 Iniciando escaneo de activos pendientes (is_active = 0)...")
-    conn = get_db_connection()
+    conn = mysql.connector.connect(**config.DB_CONFIG)
     cursor = conn.cursor(dictionary=True)
-
-    # Buscar activos que se añadieron desde la web pero no tienen datos
     cursor.execute("SELECT id, nombre_comun FROM sys_traductor_simbolos WHERE is_active = 0")
-    pendientes = cursor.fetchall()
-
-    if not pendientes:
-        print("☕ Todo al día. No hay activos pendientes.")
-        cursor.close()
-        conn.close()
-        return
-
-    for p in pendientes:
-        ticker = p['nombre_comun']
-        print(f"🛠 Procesando: {ticker}...")
-        
-        mapeo = buscar_mapeo_profundo(ticker)
-        
-        # Actualizamos la fila con los datos encontrados y activamos el activo
-        sql = """
-            UPDATE sys_traductor_simbolos 
-            SET binance_spot = %s, 
-                binance_usdt_future = %s, 
-                binance_coin_future = %s, 
-                bingx_perp = %s, 
-                yahoo_sym = %s, 
-                prioridad_precio = %s, 
-                is_active = 1 
-            WHERE id = %s
-        """
-        valores = (
-            mapeo['binance_spot'], mapeo['binance_usdt_future'],
-            mapeo['binance_coin_future'], mapeo['bingx_perp'],
-            mapeo['yahoo_sym'], mapeo['prioridad'], p['id']
-        )
-        
-        cursor.execute(sql, valores)
+    for p in cursor.fetchall():
+        m = buscar_mapeo_profundo(p['nombre_comun'])
+        cursor.execute("""
+            UPDATE sys_traductor_simbolos SET 
+            binance_spot=%s, binance_usdt_future=%s, yahoo_sym=%s, prioridad_precio=%s, is_active=1 
+            WHERE id=%s""", (m['binance_spot'], m['binance_usdt_future'], m['yahoo_sym'], m['prioridad'], p['id']))
         conn.commit()
-        print(f"   ✅ {ticker} validado y activado. Prioridad: {mapeo['prioridad']}")
-        time.sleep(1) # Cortesía para las APIs
-
-    cursor.close()
+        print(f"✅ {p['nombre_comun']} activado vía {m['prioridad']}")
     conn.close()
-    print("🏁 Fin del proceso de validación.")
 
 if __name__ == "__main__":
     procesar_pendientes()
