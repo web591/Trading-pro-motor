@@ -4,3 +4,4 @@ pip install mysql-connector-python
 .\.venv\Scripts\activate
 pip install python-binance
 pip install finnhub-python
+pip install alpha_vantage

@@ -2,108 +2,102 @@ import mysql.connector
 import time
 import requests
 from binance.client import Client
-import finnhub
-from alpha_vantage.timeseries import TimeSeries
 import config
 
-# --- CONFIGURACIÓN DE CLIENTES ---
 binance_client = Client(config.BINANCE_KEY, config.BINANCE_SECRET)
-finnhub_client = finnhub.Client(api_key=config.FINNHUB_KEY)
 
 def get_db_connection():
     return mysql.connector.connect(**config.DB_CONFIG)
 
-# --- FUNCIONES DE EXTRACCIÓN ---
-
-def consultar_binance(symbol):
+def get_binance_price(symbol, segment):
     try:
-        ticker = binance_client.get_ticker(symbol=symbol.replace("/", ""))
-        return {'price': float(ticker['lastPrice']), 'change': float(ticker['priceChangePercent'])}
+        if segment == 'binance_spot':
+            return float(binance_client.get_symbol_ticker(symbol=symbol)['price'])
+        elif segment == 'binance_usdt_future':
+            return float(binance_client.futures_symbol_ticker(symbol=symbol)['price'])
+        elif segment == 'binance_coin_future':
+            return float(binance_client.futures_coin_symbol_ticker(symbol=symbol)[0]['price'])
     except: return None
 
-def consultar_bingx(symbol):
+def get_bingx_price(symbol, segment):
     try:
-        # Ajuste para Forex/Oro en BingX (Intentando Standard Ticker)
-        # Algunos símbolos de TradFi en BingX requieren formato limpio como EURUSD
+        # Usamos V2 para Perpetuos que es lo que te funcionó en el escaneo
         url = f"https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol={symbol}"
-        response = requests.get(url).json()
-        if response.get('code') == 0:
-            data = response['data']
-            return {'price': float(data['lastPrice']), 'change': float(data['priceChangePercent'])}
+        r = requests.get(url, timeout=5).json()
+        if r.get('code') == 0:
+            return float(r['data']['lastPrice'])
         return None
     except: return None
 
-def consultar_finnhub(symbol):
+def get_alpha_fallback(symbol):
     try:
-        quote = finnhub_client.quote(symbol)
-        if quote['c'] == 0: return None
-        return {'price': float(quote['c']), 'change': float(quote['dp'])}
+        # Especial para Oro y Forex
+        if symbol in ['XAUUSD', 'EURUSD'] or len(symbol) == 6:
+            base = symbol[:3] if len(symbol) == 6 else "XAU"
+            target = symbol[3:] if len(symbol) == 6 else "USD"
+            url = f"https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency={base}&to_currency={target}&apikey={config.ALPHA_VANTAGE_KEY}"
+            r = requests.get(url).json()
+            return float(r["Realtime Currency Exchange Rate"]["5. Exchange Rate"])
+        # Stocks
+        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={config.ALPHA_VANTAGE_KEY}"
+        r = requests.get(url).json()
+        return float(r["Global Quote"]["05. price"])
     except: return None
 
-def consultar_alpha_vantage(symbol):
-    try:
-        ts = TimeSeries(key=config.ALPHA_VANTAGE_KEY)
-        # Usamos el endpoint de intercambio de divisas para Oro/Forex
-        from_c = symbol[:3]
-        to_c = symbol[3:]
-        data, _ = ts.get_currency_exchange_rate(from_currency=from_c, to_currency=to_c)
-        return {'price': float(data['5. Exchange Rate']), 'change': 0.00}
-    except: return None
-
-# --- GUARDADO EN DB ---
-def guardar_en_db(symbol, data, source):
+def guardar_en_db(nombre, precio, fuente):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        # Forzamos la actualización de todos los campos para que la tabla siempre esté al día
         query = """
-            INSERT INTO sys_precios_activos (symbol, price, change_24h, source) 
-            VALUES (%s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE price=%s, change_24h=%s, source=%s
+            INSERT INTO sys_precios_activos (symbol, price, source, last_update) 
+            VALUES (%s, %s, %s, NOW()) 
+            ON DUPLICATE KEY UPDATE price=%s, source=%s, last_update=NOW()
         """
-        cursor.execute(query, (symbol, data['price'], data['change'], source, 
-                               data['price'], data['change'], source))
+        cursor.execute(query, (nombre, precio, fuente, precio, fuente))
         conn.commit()
         cursor.close()
         conn.close()
-        print(f"   ✅ {source} -> {symbol}: ${data['price']}")
+        print(f"   ✅ {nombre} -> ${precio} (vía {fuente})")
     except Exception as e:
-        print(f"❌ Error DB: {e}")
+        print(f"❌ Error DB en {nombre}: {e}")
 
-# --- MOTOR PRINCIPAL CON TIEMPOS ---
-def motor_principal():
-    minuto_actual = time.localtime().tm_min
-    segundo_actual = time.localtime().tm_sec
-    
-    print(f"\n🚀 Ciclo {time.strftime('%H:%M:%S')}")
-    
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT symbol, priority_source FROM sys_monedas_activas WHERE is_active = 1")
-    activos = cursor.fetchall()
-    conn.close()
+def motor():
+    print("⚡ MOTOR MULTI-MERCADO OPTIMIZADO")
+    while True:
+        print(f"\n🚀 Ciclo {time.strftime('%H:%M:%S')}")
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM sys_traductor_simbolos WHERE is_active = 1")
+        activos = cursor.fetchall()
+        cursor.close()
+        conn.close()
 
-    for item in activos:
-        source = item['priority_source']
-        symbol = item['symbol']
-        resultado = None
+        for a in activos:
+            nombre = a['nombre_comun']
+            prioridad = a['prioridad_precio']
+            precio = None
+            fuente_final = "ninguna"
 
-        # 1. APIs de Alta Frecuencia (Binance, BingX, Finnhub)
-        if source == 'BINANCE': resultado = consultar_binance(symbol)
-        elif source == 'BINGX': resultado = consultar_bingx(symbol)
-        elif source == 'FINNHUB': resultado = consultar_finnhub(symbol)
-        
-        # 2. API de Baja Frecuencia (Alpha Vantage) - Solo corre en el minuto 0 de cada hora
-        elif source == 'ALPHA':
-            if minuto_actual == 0:
-                print(f"   ⏳ Actualizando fundamental/commodity (Alpha)...")
-                resultado = consultar_alpha_vantage(symbol)
+            # 1. Intentar Fuente Primaria (Binance o BingX Perp)
+            if "binance" in prioridad:
+                precio = get_binance_price(a[prioridad], prioridad)
+                fuente_final = prioridad
+            elif "bingx" in prioridad:
+                precio = get_bingx_price(a[prioridad], prioridad)
+                fuente_final = prioridad
+
+            # 2. Si falla o es Forex/Oro, intentar Alpha
+            if not precio and a['alpha_sym']:
+                precio = get_alpha_fallback(a['alpha_sym'])
+                fuente_final = "alpha_vantage"
+
+            if precio:
+                guardar_en_db(nombre, precio, fuente_final)
             else:
-                continue # Salta este activo si no es la hora exacta
+                print(f"   ❌ {nombre}: Error total de captura.")
 
-        if resultado:
-            guardar_en_db(symbol, resultado, source)
+        time.sleep(60)
 
 if __name__ == "__main__":
-    while True:
-        motor_principal()
-        time.sleep(60)
+    motor()
