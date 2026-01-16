@@ -2,131 +2,126 @@ import mysql.connector
 import time
 import requests
 import yfinance as yf
-from binance.client import Client
+from datetime import datetime
 import config
 
-# --- CONECTORES (Iguales a los anteriores, no cambian) ---
-def get_binance_data(symbol, segment):
+def get_db_connection():
+    return mysql.connector.connect(**config.DB_CONFIG)
+
+# --- CAPTURA DE PRECIOS (JERARQUÍA REDUNDANTE) ---
+def get_price_data(a):
+    nombre = a['nombre_comun']
+    prio = a['prioridad_precio']
+    
+    # 1. Intentar por Prioridad Principal
+    res, fuente = None, ""
     try:
-        if segment == 'binance_spot': url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
-        elif segment == 'binance_usdt_future': url = f"https://fapi.binance.com/fapi/v1/ticker/24hr?symbol={symbol}"
-        elif segment == 'binance_coin_future': url = f"https://dapi.binance.com/dapi/v1/ticker/24hr?symbol={symbol}"
-        else: return None
+        if prio == 'yahoo_sym':
+            res = get_yahoo_price(a['yahoo_sym']); fuente = "yahoo"
+        elif "binance" in prio:
+            res = get_binance_public(a[prio], prio); fuente = prio
+        elif "bingx" in prio:
+            res = get_bingx_public(a[prio]); fuente = prio
+
+        # 2. Cascada de Respaldo si falla la prioridad
+        if not res and a['yahoo_sym']:
+            res = get_yahoo_price(a['yahoo_sym']); fuente = "fallback_yahoo"
+        if not res and a['finnhub_sym']:
+            res = get_finnhub_price(a['finnhub_sym']); fuente = "fallback_finnhub"
+    except: pass
+    return res, fuente
+
+def get_binance_public(symbol, segment):
+    base = "fapi" if "usdt_future" in segment else "dapi" if "coin_future" in segment else "api"
+    url = f"https://{base}.binance.com/{base}/v1/ticker/24hr?symbol={symbol}" if base != "api" else f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
+    try:
         r = requests.get(url, timeout=5).json()
         d = r[0] if isinstance(r, list) else r
-        vol = float(d.get('quoteVolume', 0)) if segment != 'binance_coin_future' else float(d.get('baseVolume', 0))
-        return {'price': float(d['lastPrice']), 'change': float(d['priceChangePercent']), 'volume': vol}
+        return {'price': float(d['lastPrice']), 'change': float(d['priceChangePercent']), 'volume': float(d.get('quoteVolume', 0))}
     except: return None
 
-def get_bingx_data(symbol):
-    try:
-        url = f"https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol={symbol}"
-        r = requests.get(url, timeout=5).json()
-        if r.get('code') == 0:
-            d = r['data']
-            return {'price': float(d['lastPrice']), 'change': float(d['priceChangePercent']), 'volume': float(d['volume'])}
-    except: return None
-
-def get_yahoo_data(symbol):
+def get_yahoo_price(symbol):
     try:
         t = yf.Ticker(symbol)
-        price = None
-        try: price = t.fast_info['last_price']
-        except: pass
-        if price is None:
-            hist = t.history(period="1d")
-            if not hist.empty: price = hist['Close'].iloc[-1]
-        if price is None: return None
-        change = 0
-        try:
-            hist_2d = t.history(period="2d")
-            if len(hist_2d) > 1:
-                prev = hist_2d['Close'].iloc[-2]
-                change = ((price - prev) / prev) * 100
-        except: pass
-        return {'price': float(price), 'change': float(change), 'volume': 0}
+        p = t.fast_info['last_price']
+        return {'price': p, 'change': 0, 'volume': 0} # Simplificado para velocidad
     except: return None
 
-# --- FUNCIONES DE BASE DE DATOS (AHORA RECIBEN LA CONEXIÓN) ---
+def get_bingx_public(symbol):
+    try:
+        r = requests.get(f"https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol={symbol}").json()
+        if r['code'] == 0:
+            return {'price': float(r['data']['lastPrice']), 'change': float(r['data']['priceChangePercent']), 'volume': float(r['data']['volume'])}
+    except: return None
 
-def actualizar_fundamentales(conn, nombre, a):
-    """ Usa la conexión existente para no crear una nueva """
+def get_finnhub_price(symbol):
+    try:
+        r = requests.get(f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={config.FINNHUB_KEY}").json()
+        return {'price': r['c'], 'change': r['dp'], 'volume': 0}
+    except: return None
+
+# --- GESTIÓN DE FUNDAMENTALES (CON HORARIO ALPHA) ---
+def enriquecer_datos(conn, a):
+    ahora = datetime.now()
+    # Solo usamos Alpha Vantage de 2 AM a 4 AM
+    permitir_alpha = 2 <= ahora.hour <= 4
+    
     try:
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT last_fundamental_update FROM sys_info_activos WHERE symbol = %s", (nombre,))
+        cursor.execute("SELECT last_fundamental_update FROM sys_info_activos WHERE symbol = %s", (a['nombre_comun'],))
         reg = cursor.fetchone()
 
         if not reg or (time.time() - reg['last_fundamental_update'].timestamp() > 86400):
-            print(f"   ℹ️ Buscando fundamentales para {nombre}...")
-            t = yf.Ticker(a['yahoo_sym'])
-            info = t.info
-            sector = info.get('sector', 'Cripto/Commodity')
-            industry = info.get('industry', 'N/A')
-            mcap = info.get('marketCap', 0)
+            sector, industry, mcap = "N/A", "N/A", 0
+            # Siempre intentar Yahoo primero
+            try:
+                t = yf.Ticker(a['yahoo_sym'])
+                sector, industry, mcap = t.info.get('sector'), t.info.get('industry'), t.info.get('marketCap', 0)
+            except:
+                if permitir_alpha and a['alpha_sym']:
+                    url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={a['alpha_sym']}&apikey={config.ALPHA_VANTAGE_KEY}"
+                    r = requests.get(url).json()
+                    sector, mcap = r.get('Sector'), r.get('MarketCapitalization', 0)
 
-            query = """INSERT INTO sys_info_activos (symbol, sector, industry, market_cap) 
-                       VALUES (%s, %s, %s, %s) ON DUPLICATE KEY UPDATE sector=%s, industry=%s, market_cap=%s, last_fundamental_update=NOW()"""
-            cursor.execute(query, (nombre, sector, industry, mcap, sector, industry, mcap))
+            cursor.execute("INSERT INTO sys_info_activos (symbol, sector, industry, market_cap) VALUES (%s, %s, %s, %s) ON DUPLICATE KEY UPDATE sector=%s, industry=%s, market_cap=%s, last_fundamental_update=NOW()",
+                         (a['nombre_comun'], sector, industry, mcap, sector, industry, mcap))
             conn.commit()
         cursor.close()
     except: pass
 
-def guardar_datos(conn, nombre, data, fuente):
-    """ Usa la conexión existente """
-    try:
-        cursor = conn.cursor()
-        query = """INSERT INTO sys_precios_activos (symbol, price, change_24h, volume_24h, source, last_update) 
-                   VALUES (%s, %s, %s, %s, %s, NOW()) ON DUPLICATE KEY UPDATE price=%s, change_24h=%s, volume_24h=%s, source=%s, last_update=NOW()"""
-        cursor.execute(query, (nombre, data['price'], data['change'], data['volume'], fuente, data['price'], data['change'], data['volume'], fuente))
-        conn.commit()
-        cursor.close()
-    except: pass
-
-# --- MOTOR PRINCIPAL OPTIMIZADO ---
-
+# --- MOTOR PRINCIPAL ---
 def motor():
-    print("⚡ MOTOR OPTIMIZADO (Ahorro de conexiones DB activo)")
+    print("🚀 MOTOR V6 INICIADO - CONEXIÓN BLINDADA")
     while True:
-        print(f"\n⏰ Ciclo: {time.strftime('%H:%M:%S')}")
-        
         conn = None
         try:
-            # 1. ABRIR UNA SOLA CONEXIÓN POR MINUTO
-            conn = mysql.connector.connect(**config.DB_CONFIG)
+            conn = get_db_connection()
             cursor = conn.cursor(dictionary=True)
             cursor.execute("SELECT * FROM sys_traductor_simbolos WHERE is_active = 1")
             activos = cursor.fetchall()
             cursor.close()
 
+            print(f"\n⏰ Ciclo: {time.strftime('%H:%M:%S')}")
             for a in activos:
-                nombre = a['nombre_comun']
-                prioridad = a['prioridad_precio']
-                res, fuente_final = None, ""
-
-                # Lógica de captura (Igual que antes)
-                if prioridad == 'yahoo_sym': res = get_yahoo_data(a['yahoo_sym']); fuente_final = "yahoo"
-                elif "binance" in prioridad: res = get_binance_data(a[prioridad], prioridad); fuente_final = prioridad
-                elif "bingx" in prioridad: res = get_bingx_data(a[prioridad]); fuente_final = prioridad
-                
-                if not res and a['yahoo_sym']:
-                    res = get_yahoo_data(a['yahoo_sym']); fuente_final = "fallback_yahoo"
-
+                res, fuente = get_price_data(a)
                 if res:
-                    # Pasamos 'conn' a las funciones para reusar la conexión
-                    guardar_datos(conn, nombre, res, fuente_final)
-                    if a['yahoo_sym']:
-                        actualizar_fundamentales(conn, nombre, a)
-                    print(f"   ✅ {nombre:7} | ${res['price']:<10.2f} | {fuente_final}")
-                else:
-                    print(f"   ❌ {nombre}: Error")
-
-        except mysql.connector.Error as err:
-            print(f"❌ Error de MySQL: {err}. Reintentando en 60s...")
+                    # Ping preventivo para Hostinger
+                    conn.ping(reconnect=True, attempts=3, delay=2)
+                    
+                    cur = conn.cursor()
+                    cur.execute("INSERT INTO sys_precios_activos (symbol, price, change_24h, volume_24h, source, last_update) VALUES (%s, %s, %s, %s, %s, NOW()) ON DUPLICATE KEY UPDATE price=%s, change_24h=%s, volume_24h=%s, source=%s, last_update=NOW()",
+                                (a['nombre_comun'], res['price'], res['change'], res['volume'], fuente, res['price'], res['change'], res['volume'], fuente))
+                    conn.commit()
+                    cur.close()
+                    
+                    enriquecer_datos(conn, a)
+                    print(f"   ✅ {a['nombre_comun']:7} | ${res['price']:<10.2f} | {fuente}")
+                
+        except Exception as e:
+            print(f"❌ Error de Ciclo: {e}")
         finally:
-            # 2. CERRAR LA CONEXIÓN AL FINAL DEL CICLO
-            if conn and conn.is_connected():
-                conn.close()
-
+            if conn and conn.is_connected(): conn.close()
+        
         time.sleep(60)
 
 if __name__ == "__main__":
