@@ -8,14 +8,39 @@ import config
 def get_db_connection():
     return mysql.connector.connect(**config.DB_CONFIG)
 
+# --- ESCUDO DE ANOMALÍAS (NUEVO) ---
+def validar_precio_logico(nombre, res, fuente, a):
+    """
+    Evita que acciones como AT&T (T) tomen precios de criptos de $0.01
+    o que el Oro (GOLD) tome precios de ETFs de $40.
+    """
+    if not res: return None, fuente
+
+    # Lista de activos sensibles a colisiones de nombres o símbolos incorrectos
+    acciones_indices = ['T', 'GOLD', 'SILVER', 'WTI', 'DAX', 'AAPL', 'NVDA']
+    
+    if nombre in acciones_indices:
+        # Si el precio es menor a un umbral lógico, forzamos Yahoo con el símbolo correcto
+        if (nombre == 'T' and res['price'] < 5.0) or \
+           (nombre == 'GOLD' and res['price'] < 1000.0) or \
+           (nombre == 'SILVER' and res['price'] < 5.0) or \
+           (nombre == 'WTI' and res['price'] < 10.0):
+            
+            # Re-intentamos específicamente con Yahoo usando el símbolo del traductor
+            nuevo_res = get_yahoo_price(a['yahoo_sym'])
+            if nuevo_res:
+                return nuevo_res, "yahoo_shield"
+            
+    return res, fuente
+
 # --- CAPTURA DE PRECIOS (JERARQUÍA REDUNDANTE) ---
 def get_price_data(a):
     nombre = a['nombre_comun']
     prio = a['prioridad_precio']
     
-    # 1. Intentar por Prioridad Principal
     res, fuente = None, ""
     try:
+        # 1. Intentar por Prioridad Principal
         if prio == 'yahoo_sym':
             res = get_yahoo_price(a['yahoo_sym']); fuente = "yahoo"
         elif "binance" in prio:
@@ -44,7 +69,7 @@ def get_yahoo_price(symbol):
     try:
         t = yf.Ticker(symbol)
         p = t.fast_info['last_price']
-        return {'price': p, 'change': 0, 'volume': 0} # Simplificado para velocidad
+        return {'price': p, 'change': 0, 'volume': 0}
     except: return None
 
 def get_bingx_public(symbol):
@@ -63,9 +88,7 @@ def get_finnhub_price(symbol):
 # --- GESTIÓN DE FUNDAMENTALES (CON HORARIO ALPHA) ---
 def enriquecer_datos(conn, a):
     ahora = datetime.now()
-    # Solo usamos Alpha Vantage de 2 AM a 4 AM
     permitir_alpha = 2 <= ahora.hour <= 4
-    
     try:
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT last_fundamental_update FROM sys_info_activos WHERE symbol = %s", (a['nombre_comun'],))
@@ -73,7 +96,6 @@ def enriquecer_datos(conn, a):
 
         if not reg or (time.time() - reg['last_fundamental_update'].timestamp() > 86400):
             sector, industry, mcap = "N/A", "N/A", 0
-            # Siempre intentar Yahoo primero
             try:
                 t = yf.Ticker(a['yahoo_sym'])
                 sector, industry, mcap = t.info.get('sector'), t.info.get('industry'), t.info.get('marketCap', 0)
@@ -91,7 +113,7 @@ def enriquecer_datos(conn, a):
 
 # --- MOTOR PRINCIPAL ---
 def motor():
-    print("🚀 MOTOR V6 INICIADO - CONEXIÓN BLINDADA")
+    print("🚀 MOTOR V6 INICIADO - CONEXIÓN BLINDADA + ESCUDO")
     while True:
         conn = None
         try:
@@ -103,11 +125,14 @@ def motor():
 
             print(f"\n⏰ Ciclo: {time.strftime('%H:%M:%S')}")
             for a in activos:
-                res, fuente = get_price_data(a)
+                # 1. Obtener datos por jerarquía original
+                res_raw, fuente_raw = get_price_data(a)
+                
+                # 2. Aplicar Escudo de Anomalías (Solo afecta a activos en lista negra)
+                res, fuente = validar_precio_logico(a['nombre_comun'], res_raw, fuente_raw, a)
+
                 if res:
-                    # Ping preventivo para Hostinger
                     conn.ping(reconnect=True, attempts=3, delay=2)
-                    
                     cur = conn.cursor()
                     cur.execute("INSERT INTO sys_precios_activos (symbol, price, change_24h, volume_24h, source, last_update) VALUES (%s, %s, %s, %s, %s, NOW()) ON DUPLICATE KEY UPDATE price=%s, change_24h=%s, volume_24h=%s, source=%s, last_update=NOW()",
                                 (a['nombre_comun'], res['price'], res['change'], res['volume'], fuente, res['price'], res['change'], res['volume'], fuente))
