@@ -13,6 +13,7 @@ from Crypto.Util.Padding import unpad
 # --- 1. CONFIGURACIÓN ---
 try:
     import config
+    # Intentamos obtener la clave de cifrado desde el entorno o el archivo config
     MASTER_KEY = os.getenv('APP_ENCRYPTION_KEY') or getattr(config, 'ENCRYPTION_KEY', None)
     if not MASTER_KEY:
         print("❌ ERROR: No se encontró ENCRYPTION_KEY en config.py")
@@ -30,12 +31,13 @@ def descifrar_dato(texto_base64, master_key):
             partes = raw_combined.split(b"::")
             cifrado, iv = partes[0], partes[1]
         else:
+            # Intento de rescate si el formato viene distinto
             decoded_text = raw_combined.decode('utf-8')
             if "::" in decoded_text:
                 p = decoded_text.split("::")
                 cifrado, iv = base64.b64decode(p[0]), base64.b64decode(p[1])
             else: return None
-        if len(iv) != 16: return None
+            
         key_hash = sha256(master_key.encode('utf-8')).digest()
         cipher = AES.new(key_hash, AES.MODE_CBC, iv)
         decrypted_raw = cipher.decrypt(cifrado)
@@ -45,8 +47,9 @@ def descifrar_dato(texto_base64, master_key):
 
 # --- 3. OBTENER PRECIOS ---
 def obtener_precio_db(cursor, asset):
-    if asset in ['USDT', 'USDC', 'DAI', 'BUSD', 'LDUSDT', 'LDUSDC', 'LDBUSD']: 
+    if asset in ['USDT', 'USDC', 'DAI', 'BUSD', 'LDUSDT', 'LDUSDC']: 
         return 1.0
+    # Limpiamos prefijos de Binance Earn (LD)
     search_asset = asset[2:] if asset.startswith('LD') else asset
     cursor.execute("""
         SELECT price FROM sys_precios_activos 
@@ -62,6 +65,8 @@ def actualizar_saldos():
     try:
         conn = mysql.connector.connect(**config.DB_CONFIG)
         cursor = conn.cursor(dictionary=True)
+        
+        # Solo procesamos tu usuario (ID 6) que es el que estamos configurando
         cursor.execute("SELECT broker_name, api_key, api_secret FROM api_keys WHERE user_id = 6 AND status = 1")
         keys_list = cursor.fetchall()
 
@@ -69,20 +74,30 @@ def actualizar_saldos():
             broker = registro['broker_name'].lower()
             key = descifrar_dato(registro['api_key'], MASTER_KEY)
             sec = descifrar_dato(registro['api_secret'], MASTER_KEY)
-            if not key or not sec: continue
+            
+            if not key or not sec:
+                print(f"⚠️ No se pudo descifrar las llaves para {broker}")
+                continue
 
+            # --- LÓGICA BINANCE ---
             if broker == 'binance':
                 print("🤖 Sincronizando Binance...")
                 try:
                     client = Client(key, sec)
+                    # Spot Binance
                     for b in client.get_account()['balances']:
-                        total = float(b['free']) + float(b['locked'])
-                        if total > 0.0001:
+                        tot = float(b['free']) + float(b['locked'])
+                        if tot > 0.0001:
                             p = obtener_precio_db(cursor, b['asset'])
                             tipo = 'CASH' if b['asset'] in ['USDT', 'USDC'] else 'SPOT'
-                            cursor.execute("INSERT INTO sys_saldos_usuarios (user_id, broker_name, tipo_cuenta, asset, cantidad_total, cantidad_disponible, precio_referencia, valor_usd) VALUES (6, 'binance', %s, %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE cantidad_total=%s, cantidad_disponible=%s, precio_referencia=%s, valor_usd=%s", (tipo, b['asset'], total, float(b['free']), p, total*p, total, float(b['free']), p, total*p))
+                            cursor.execute("""
+                                INSERT INTO sys_saldos_usuarios (user_id, broker_name, tipo_cuenta, asset, cantidad_total, cantidad_disponible, precio_referencia, valor_usd) 
+                                VALUES (6, 'binance', %s, %s, %s, %s, %s, %s) 
+                                ON DUPLICATE KEY UPDATE cantidad_total=%s, cantidad_disponible=%s, precio_referencia=%s, valor_usd=%s
+                            """, (tipo, b['asset'], tot, float(b['free']), p, tot*p, tot, float(b['free']), p, tot*p))
                 except Exception as eb: print(f"❌ Error Binance: {eb}")
 
+            # --- LÓGICA BINGX ---
             elif broker == 'bingx':
                 print("🟠 Sincronizando BingX...")
                 try:
@@ -90,61 +105,59 @@ def actualizar_saldos():
                         params['timestamp'] = int(time.time() * 1000)
                         qs = '&'.join([f"{k}={v}" for k, v in sorted(params.items())])
                         sig = hmac.new(sec.encode('utf-8'), qs.encode('utf-8'), sha256).hexdigest()
-                        headers = {'X-BX-APIKEY': key, 'Content-Type': 'application/json'}
                         url = f"https://open-api.bingx.com{path}?{qs}&signature={sig}"
-                        return requests.get(url, headers=headers).json()
+                        return requests.get(url, headers={'X-BX-APIKEY': key}).json()
 
-                    # 1. SPOT
+                    # 1. SPOT BINGX ($3.38)
                     s_res = bx_req("/openApi/spot/v1/account/balance")
-                    if s_res.get('code') == 0 and 'data' in s_res:
+                    if s_res.get('code') == 0:
                         for b in s_res['data']['balances']:
-                            total = float(b['free']) + float(b['locked'])
-                            if total > 0.0001:
+                            tot = float(b['free']) + float(b['locked'])
+                            if tot > 0.001:
                                 p = obtener_precio_db(cursor, b['asset'])
-                                cursor.execute("INSERT INTO sys_saldos_usuarios (user_id, broker_name, tipo_cuenta, asset, cantidad_total, cantidad_disponible, precio_referencia, valor_usd) VALUES (6, 'bingx', 'SPOT', %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE cantidad_total=%s, cantidad_disponible=%s, precio_referencia=%s, valor_usd=%s", (b['asset'], total, float(b['free']), p, total*p, total, float(b['free']), p, total*p))
+                                cursor.execute("""
+                                    INSERT INTO sys_saldos_usuarios (user_id, broker_name, tipo_cuenta, asset, cantidad_total, precio_referencia, valor_usd) 
+                                    VALUES (6, 'bingx', 'SPOT', %s, %s, %s, %s) 
+                                    ON DUPLICATE KEY UPDATE cantidad_total=%s, valor_usd=%s
+                                """, (b['asset'], tot, p, tot*p, tot, tot*p))
 
-                    # 2. PERPETUAL V2 (PRO) - Basado en tu Debug
+                    # 2. PERPETUAL V2 ($5.00 + los $17.95 si los transfieres)
                     f_res = bx_req("/openApi/swap/v2/user/balance")
-                    if f_res.get('code') == 0 and 'data' in f_res:
-                        d = f_res['data']
-                        # Si es el formato de tu log: {'balance': {...}}
-                        item = d['balance'] if 'balance' in d else d
-                        # Si viniera como lista
-                        items = item if isinstance(item, list) else [item]
-                        
-                        for f in items:
-                            bal_val = float(f.get('balance', 0))
-                            if bal_val > 0.01:
-                                asset = f.get('asset', 'USDT')
-                                p = 1.0 if asset == 'USDT' else obtener_precio_db(cursor, asset)
-                                pnl = float(f.get('unrealizedProfit', 0))
-                                cursor.execute("INSERT INTO sys_saldos_usuarios (user_id, broker_name, tipo_cuenta, asset, cantidad_total, pnl_no_realizado, precio_referencia, valor_usd) VALUES (6, 'bingx', 'PERPETUAL_V2', %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE cantidad_total=%s, pnl_no_realizado=%s, precio_referencia=%s, valor_usd=%s", (asset, bal_val, pnl, p, (bal_val + pnl) * p, bal_val, pnl, p, (bal_val + pnl) * p))
-
-                    # 3. STANDARD FUTURES
-                    st_res = bx_req("/openApi/swap/v1/user/balance")
-                    if st_res.get('code') == 0 and 'data' in st_res:
-                        d_st = st_res['data']
-                        items_st = d_st if isinstance(d_st, list) else [d_st]
-                        for st in items_st:
-                            wb = float(st.get('balance', 0))
-                            if wb > 0.01:
-                                asset = st.get('asset', 'USDT')
-                                p = 1.0 if asset == 'USDT' else obtener_precio_db(cursor, asset)
-                                cursor.execute("INSERT INTO sys_saldos_usuarios (user_id, broker_name, tipo_cuenta, asset, cantidad_total, precio_referencia, valor_usd) VALUES (6, 'bingx', 'STANDARD_FUT', %s, %s, %s, %s) ON DUPLICATE KEY UPDATE cantidad_total=%s, precio_referencia=%s, valor_usd=%s", (asset, wb, p, wb*p, wb, p, wb*p))
+                    if f_res.get('code') == 0:
+                        data = f_res.get('data', [])
+                        # Normalizamos la respuesta (lista o dict)
+                        items = data if isinstance(data, list) else [data.get('balance', data)]
+                        for item in items:
+                            if isinstance(item, dict) and 'asset' in item:
+                                monto = float(item.get('balance', 0))
+                                if monto > 0.001:
+                                    asset = item['asset']
+                                    p = 1.0 if asset == 'USDT' else obtener_precio_db(cursor, asset)
+                                    cursor.execute("""
+                                        INSERT INTO sys_saldos_usuarios (user_id, broker_name, tipo_cuenta, asset, cantidad_total, precio_referencia, valor_usd) 
+                                        VALUES (6, 'bingx', 'PERPETUAL_V2', %s, %s, %s, %s) 
+                                        ON DUPLICATE KEY UPDATE cantidad_total=%s, valor_usd=%s
+                                    """, (asset, monto, p, monto*p, monto, monto*p))
 
                 except Exception as ex: print(f"❌ Error BingX: {ex}")
 
         conn.commit()
         print(f"✅ Ciclo terminado: {time.strftime('%H:%M:%S')}")
-    except Exception as e: print(f"❌ Error General: {e}")
+
+    except Exception as e:
+        print(f"❌ Error General: {e}")
     finally:
         if conn and conn.is_connected():
             cursor.close()
             conn.close()
 
+# --- 5. EJECUCIÓN CONTINUA ---
 if __name__ == "__main__":
-    print("🚀 Motor de Saldos Iniciado")
+    print("🚀 MOTOR DE SALDOS INICIADO (Ciclo de 2 minutos)")
+    print("💡 Consejo: Transfiere tus USDT de 'Standard' a 'Perpetual' en BingX para ver el total.")
+    
     while True:
         actualizar_saldos()
-        print("💤 Esperando 2 minutos...")
+        # Aquí recuperamos los 2 minutos de espera
+        print("💤 Esperando 2 minutos para la próxima actualización...")
         time.sleep(120)
