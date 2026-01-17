@@ -22,7 +22,7 @@ except ImportError:
     sys.exit(1)
 
 # --- 2. FUNCIÓN DE DESCIFRADO ---
-def descifrar_dato(texto_base64, master_key, nombre_campo="dato"):
+def descifrar_dato(texto_base64, master_key):
     try:
         if not texto_base64: return None
         raw_combined = base64.b64decode(texto_base64.strip())
@@ -71,40 +71,20 @@ def actualizar_saldos():
             sec = descifrar_dato(registro['api_secret'], MASTER_KEY)
             if not key or not sec: continue
 
-            # --- LÓGICA BINANCE ---
             if broker == 'binance':
                 print("🤖 Sincronizando Binance...")
                 try:
                     client = Client(key, sec)
-                    # Spot y Cash
                     for b in client.get_account()['balances']:
                         total = float(b['free']) + float(b['locked'])
                         if total > 0.0001:
                             p = obtener_precio_db(cursor, b['asset'])
                             tipo = 'CASH' if b['asset'] in ['USDT', 'USDC'] else 'SPOT'
-                            cursor.execute("""
-                                INSERT INTO sys_saldos_usuarios (user_id, broker_name, tipo_cuenta, asset, cantidad_total, cantidad_disponible, precio_referencia, valor_usd)
-                                VALUES (6, 'binance', %s, %s, %s, %s, %s, %s)
-                                ON DUPLICATE KEY UPDATE cantidad_total=%s, cantidad_disponible=%s, precio_referencia=%s, valor_usd=%s
-                            """, (tipo, b['asset'], total, float(b['free']), p, total*p, total, float(b['free']), p, total*p))
-                    # Futuros Binance
-                    try:
-                        for f in client.futures_account()['assets']:
-                            wb = float(f['walletBalance'])
-                            if wb > 0.01:
-                                p = 1.0 if f['asset'] == 'USDT' else obtener_precio_db(cursor, f['asset'])
-                                pnl = float(f.get('unrealizedProfit', 0))
-                                cursor.execute("""
-                                    INSERT INTO sys_saldos_usuarios (user_id, broker_name, tipo_cuenta, asset, cantidad_total, pnl_no_realizado, precio_referencia, valor_usd)
-                                    VALUES (6, 'binance', 'PERPETUAL', %s, %s, %s, %s, %s)
-                                    ON DUPLICATE KEY UPDATE cantidad_total=%s, pnl_no_realizado=%s, precio_referencia=%s, valor_usd=%s
-                                """, (f['asset'], wb, pnl, p, (wb+pnl)*p, wb, pnl, p, (wb+pnl)*p))
-                    except: pass
+                            cursor.execute("INSERT INTO sys_saldos_usuarios (user_id, broker_name, tipo_cuenta, asset, cantidad_total, cantidad_disponible, precio_referencia, valor_usd) VALUES (6, 'binance', %s, %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE cantidad_total=%s, cantidad_disponible=%s, precio_referencia=%s, valor_usd=%s", (tipo, b['asset'], total, float(b['free']), p, total*p, total, float(b['free']), p, total*p))
                 except Exception as eb: print(f"❌ Error Binance: {eb}")
 
-            # --- LÓGICA BINGX ---
             elif broker == 'bingx':
-                print("🟠 Sincronizando BingX (Todas las carteras)...")
+                print("🟠 Sincronizando BingX...")
                 try:
                     def bx_req(path, params={}):
                         params['timestamp'] = int(time.time() * 1000)
@@ -114,7 +94,7 @@ def actualizar_saldos():
                         url = f"https://open-api.bingx.com{path}?{qs}&signature={sig}"
                         return requests.get(url, headers=headers).json()
 
-                    # 1. SPOT BINGX
+                    # 1. SPOT
                     s_res = bx_req("/openApi/spot/v1/account/balance")
                     if s_res.get('code') == 0 and 'data' in s_res:
                         for b in s_res['data']['balances']:
@@ -123,23 +103,29 @@ def actualizar_saldos():
                                 p = obtener_precio_db(cursor, b['asset'])
                                 cursor.execute("INSERT INTO sys_saldos_usuarios (user_id, broker_name, tipo_cuenta, asset, cantidad_total, cantidad_disponible, precio_referencia, valor_usd) VALUES (6, 'bingx', 'SPOT', %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE cantidad_total=%s, cantidad_disponible=%s, precio_referencia=%s, valor_usd=%s", (b['asset'], total, float(b['free']), p, total*p, total, float(b['free']), p, total*p))
 
-                    # 2. FUTUROS PERPETUOS (PRO/V2)
+                    # 2. PERPETUAL V2 (PRO) - Basado en tu Debug
                     f_res = bx_req("/openApi/swap/v2/user/balance")
-                    if f_res.get('code') == 0 and isinstance(f_res.get('data'), list):
-                        for f in f_res['data']:
-                            wb = float(f.get('balance', 0))
-                            if wb > 0.01:
+                    if f_res.get('code') == 0 and 'data' in f_res:
+                        d = f_res['data']
+                        # Si es el formato de tu log: {'balance': {...}}
+                        item = d['balance'] if 'balance' in d else d
+                        # Si viniera como lista
+                        items = item if isinstance(item, list) else [item]
+                        
+                        for f in items:
+                            bal_val = float(f.get('balance', 0))
+                            if bal_val > 0.01:
                                 asset = f.get('asset', 'USDT')
                                 p = 1.0 if asset == 'USDT' else obtener_precio_db(cursor, asset)
                                 pnl = float(f.get('unrealizedProfit', 0))
-                                cursor.execute("INSERT INTO sys_saldos_usuarios (user_id, broker_name, tipo_cuenta, asset, cantidad_total, pnl_no_realizado, precio_referencia, valor_usd) VALUES (6, 'bingx', 'PERPETUAL_PRO', %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE cantidad_total=%s, pnl_no_realizado=%s, precio_referencia=%s, valor_usd=%s", (asset, wb, pnl, p, (wb+pnl)*p, wb, pnl, p, (wb+pnl)*p))
+                                cursor.execute("INSERT INTO sys_saldos_usuarios (user_id, broker_name, tipo_cuenta, asset, cantidad_total, pnl_no_realizado, precio_referencia, valor_usd) VALUES (6, 'bingx', 'PERPETUAL_V2', %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE cantidad_total=%s, pnl_no_realizado=%s, precio_referencia=%s, valor_usd=%s", (asset, bal_val, pnl, p, (bal_val + pnl) * p, bal_val, pnl, p, (bal_val + pnl) * p))
 
-                    # 3. FUTUROS ESTÁNDAR (TRADICIONALES)
+                    # 3. STANDARD FUTURES
                     st_res = bx_req("/openApi/swap/v1/user/balance")
                     if st_res.get('code') == 0 and 'data' in st_res:
-                        # El formato de estándar a veces varía, validamos si es lista o objeto
-                        balances = st_res['data'] if isinstance(st_res['data'], list) else [st_res['data']]
-                        for st in balances:
+                        d_st = st_res['data']
+                        items_st = d_st if isinstance(d_st, list) else [d_st]
+                        for st in items_st:
                             wb = float(st.get('balance', 0))
                             if wb > 0.01:
                                 asset = st.get('asset', 'USDT')
