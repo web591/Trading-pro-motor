@@ -9,10 +9,9 @@ import random
 def get_db_connection():
     return mysql.connector.connect(**config.DB_CONFIG)
 
-# --- TU ESCUDO DE ANOMALÍAS (MANTENIDO INTACTO) ---
+# --- TU ESCUDO DE ANOMALÍAS ---
 def validar_precio_logico(nombre, res, fuente, a):
     if not res: return None, fuente
-    # Activos sensibles a colisiones
     acciones_indices = ['T', 'GOLD', 'SILVER', 'WTI', 'DAX', 'AAPL', 'NVDA']
     if nombre in acciones_indices:
         if (nombre == 'T' and res['price'] < 5.0) or \
@@ -20,18 +19,17 @@ def validar_precio_logico(nombre, res, fuente, a):
            (nombre == 'SILVER' and res['price'] < 5.0) or \
            (nombre == 'WTI' and res['price'] < 10.0):
             
-            # Si falla la lógica, forzamos Yahoo como respaldo seguro
             nuevo_res = get_yahoo_price(a['yahoo_sym'])
             if nuevo_res:
                 return nuevo_res, "yahoo_shield"
     return res, fuente
 
-# --- FUNCIONES DE CAPTURA (ACTUALIZADAS PARA NUEVAS COLUMNAS) ---
+# --- FUNCIONES DE CAPTURA (CORREGIDAS) ---
+HEADERS_MOZILLA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
 
 def get_binance_price(symbol, is_future=True, is_coin_m=False):
     if not symbol: return None
     try:
-        # Lógica para elegir el endpoint correcto según el tipo de contrato
         if is_coin_m:
             url = f"https://dapi.binance.com/dapi/v1/ticker/price?symbol={symbol}"
         elif is_future:
@@ -39,12 +37,10 @@ def get_binance_price(symbol, is_future=True, is_coin_m=False):
         else:
             url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
             
-        r = requests.get(url, timeout=3)
+        r = requests.get(url, headers=HEADERS_MOZILLA, timeout=3)
         if r.status_code == 200:
             data = r.json()
-            # Si es Coin-M la respuesta es una lista
             if isinstance(data, list): data = data[0]
-            
             return {
                 'price': float(data['price'] if 'price' in data else data['lastPrice']),
                 'change': float(data.get('priceChangePercent', 0)),
@@ -52,13 +48,18 @@ def get_binance_price(symbol, is_future=True, is_coin_m=False):
             }
     except: return None
 
-def get_bingx_price(symbol, version='v2'):
+def get_bingx_price(symbol, session=None, version='v2'):
     if not symbol: return None
     try:
-        # v2 es para Perpetual, v1 es para Standard
         endpoint = "swap/v2/quote/ticker" if version == 'v2' else "swap/v1/ticker/24hr"
         url = f"https://open-api.bingx.com/openApi/{endpoint}?symbol={symbol}"
-        r = requests.get(url, timeout=3)
+        
+        # Usar la sesión si existe, si no, usar requests normal
+        if session:
+            r = session.get(url, timeout=3)
+        else:
+            r = requests.get(url, headers=HEADERS_MOZILLA, timeout=3)
+            
         if r.status_code == 200:
             d = r.json()['data']
             return {
@@ -80,43 +81,58 @@ def get_yahoo_price(symbol):
         }
     except: return None
 
-# --- CICLO PRINCIPAL (CON NUEVA LÓGICA DE PRIORIDADES) ---
+def get_finnhub_price(symbol):
+    try:
+        url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={config.FINNHUB_KEY}"
+        r = requests.get(url, headers=HEADERS_MOZILLA, timeout=5)
+        data = r.json()
+        if data and 'c' in data and data['c'] != 0:
+            return {'price': float(data['c']), 'change': float(data['dp']), 'volume': 0}
+    except: return None
+
+def enriquecer_datos(conn, a):
+    # Aquí iría tu función de fundamentales si la tienes definida
+    pass
+
+# --- CICLO PRINCIPAL ---
 
 def ciclo_principal():
-    print("🚀 Motor Cuádruple V2 (Multifuente) Iniciado...")
+    print("🚀 Motor Cuádruple V2.1 (Cascada Restaurada)")
+    session = requests.Session()
+    session.headers.update(HEADERS_MOZILLA)
+
     while True:
+        conn = None
         try:
             conn = get_db_connection()
             cur = conn.cursor(dictionary=True)
-            
             cur.execute("SELECT * FROM sys_traductor_simbolos WHERE is_active = 1")
             activos = cur.fetchall()
 
             for a in activos:
                 res_raw = None
-                fuente_raw = "none"
+                fuente_raw = None
 
-                # 1. Intentar Binance USDT Futures (Prioridad alta en Cripto)
+                # 1. Binance Futures
                 if a['binance_usdt_future']:
                     res_raw = get_binance_price(a['binance_usdt_future'], is_future=True)
                     fuente_raw = "binance_futures"
 
-                # 2. Si falla o no hay, intentar BingX Perp
+                # 2. BingX (Cascada)
                 if not res_raw and a['bingx_perp']:
-                    res_raw = get_bingx_price(a['bingx_perp'], version='v2')
+                    res_raw = get_bingx_price(a['bingx_perp'], session=session)
                     fuente_raw = "bingx_perp"
 
-                # 3. Intentar Binance Coin-M (NUEVA COLUMNA)
-                if not res_raw and a['binance_coin_future']:
-                    res_raw = get_binance_price(a['binance_coin_future'], is_coin_m=True)
-                    fuente_raw = "binance_coin_m"
+                # 3. Binance Spot (Cascada)
+                if not res_raw and a['binance_spot']:
+                    res_raw = get_binance_price(a['binance_spot'], is_future=False)
+                    fuente_raw = "binance_spot"
 
-                # 4. Fallback a Yahoo (Acciones, Metales, etc.)
+                # 4. Yahoo (Cascada)
                 if not res_raw and a['yahoo_sym']:
                     res_raw = get_yahoo_price(a['yahoo_sym'])
                     fuente_raw = "yahoo"
 
-                # APLICAR TU ESCUDO DE ANOMALÍAS
                 res, fuente = validar_precio_logico(a['nombre_comun'], res_raw, fuente_raw, a)
 
                 if res:
@@ -131,7 +147,12 @@ def ciclo_principal():
                           res['price'], res['change'], res['volume'], fuente))
                     conn.commit()
                     cur_upd.close()
-                    print(f"   ✅ {a['nombre_comun']:7} | ${res['price']:<12.4f} | {fuente}")
+                    
+                    if random.random() < 0.1:
+                        enriquecer_datos(conn, a)
+                    print(f"   ✅ {a['nombre_comun']:7} | ${res['price']:<12.6f} | {fuente}")
+                
+                time.sleep(0.3) 
 
             cur.close()
             conn.close()
@@ -139,7 +160,8 @@ def ciclo_principal():
             time.sleep(30)
 
         except Exception as e:
-            print(f"❌ Error en ciclo: {e}")
+            print(f"❌ Error: {e}")
+            if conn: conn.close()
             time.sleep(10)
 
 if __name__ == "__main__":
