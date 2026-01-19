@@ -8,6 +8,7 @@ def get_db_connection():
     return mysql.connector.connect(**config.DB_CONFIG)
 
 def procesar_busqueda_exhaustiva(ticker):
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     """Busca en todas las fuentes sin detenerse para llenar la tabla"""
     res = {
         'binance_spot': None, 'binance_usdt_future': None,
@@ -18,7 +19,7 @@ def procesar_busqueda_exhaustiva(ticker):
     # --- 1. BINANCE (Spot y Futuros) ---
     b_sym = f"{ticker}USDT"
     try:
-        r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={b_sym}", timeout=3)
+        r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={b_sym}", headers=headers, timeout=3)
         if r.status_code == 200:
             res['binance_spot'] = b_sym
             res['binance_usdt_future'] = b_sym # Usamos el mismo para fapi
@@ -29,7 +30,7 @@ def procesar_busqueda_exhaustiva(ticker):
     # --- 2. BINGX (Perpetuos) ---
     bx_sym = f"{ticker}-USDT"
     try:
-        r = requests.get(f"https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol={bx_sym}", timeout=3)
+        r = requests.get(f"https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol={bx_sym}", headers=headers, timeout=3)
         if r.status_code == 200:
             res['bingx_perp'] = bx_sym
             if not res['price']: # Si Binance falló, usamos este precio
@@ -63,48 +64,77 @@ def procesar_busqueda_exhaustiva(ticker):
     return res
 
 def ejecutar_motor():
-    print("🛰️  Radar de Activos Iniciado... (Conexión Única)")
+    print("🛰️ Radar de Activos Iniciado... (Modo Ultra-Ahorro: 60s)")
+    
+    # Configuramos el disfraz de Mozilla para las búsquedas externas
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+
     while True:
         conn = None
         try:
-            # Abrimos la conexión una sola vez al inicio del ciclo
+            # 1. Abrimos conexión única para esta pregunta
             conn = get_db_connection()
             cur = conn.cursor(dictionary=True)
             
+            # Buscamos si hay algo pendiente
             cur.execute("SELECT id, ticker FROM sys_simbolos_buscados WHERE status = 'pendiente' LIMIT 1")
-            row = cur.fetchone()
+            item = cur.fetchone()
 
-            if row:
-                t_id = row['id']
-                ticker = row['ticker']
-                print(f"🔎 Analizando: {ticker}...")
+            if item:
+                ticker = item['ticker']
+                t_id = item['id']
                 
+                # Marcamos que estamos trabajando en ello
                 cur.execute("UPDATE sys_simbolos_buscados SET status = 'buscando' WHERE id = %s", (t_id,))
                 conn.commit()
-
-                datos = procesar_busqueda_exhaustiva(ticker)
-
-                if datos['binance_spot'] or datos['yahoo_sym'] or datos['bingx_perp']:
-                    sql = """UPDATE sys_simbolos_buscados SET 
-                             binance_spot=%s, binance_usdt_future=%s, 
-                             bingx_perp=%s, finnhub_sym=%s, yahoo_sym=%s, 
-                             prioridad_precio=%s, precio_referencia=%s, status='encontrado'
-                             WHERE id=%s"""
-                    cur.execute(sql, (datos['binance_spot'], datos['binance_usdt_future'], 
-                                      datos['bingx_perp'], datos['finnhub_sym'], datos['yahoo_sym'], 
-                                      datos['prioridad'], datos['price'], t_id))
-                else:
-                    cur.execute("UPDATE sys_simbolos_buscados SET status = 'error', mensaje_error = 'No encontrado' WHERE id = %s", (t_id,))
                 
+                print(f"🔍 Analizando activo: {ticker}...")
+                
+                # Realizamos la búsqueda exhaustiva (Asegúrate que esta función use los headers)
+                data = procesar_busqueda_exhaustiva(ticker)
+
+                # Guardamos los resultados
+                cur.execute("""
+                    UPDATE sys_simbolos_buscados SET 
+                    status = 'encontrado', binance_spot = %s, binance_usdt_future = %s,
+                    bingx_perp = %s, yahoo_sym = %s, finnhub_sym = %s,
+                    prioridad_precio = %s, precio_referencia = %s
+                    WHERE id = %s
+                """, (data['binance_spot'], data['binance_usdt_future'], data['bingx_perp'], 
+                      data['yahoo_sym'], data['finnhub_sym'], data['prioridad'], 
+                      data['price'], t_id))
                 conn.commit()
-            
+                
+                print(f"✅ ¡Hecho! {ticker} procesado correctamente.")
+                espera_final = 5  # Si encontró uno, esperamos poco por si hay más en cola
+            else:
+                # Si NO hay nada, cerramos y esperamos 1 minuto
+                espera_final = 60 
+
             cur.close()
-            conn.close() # Cerramos después de procesar el ticker
+            conn.close() # Cerramos la puerta de la DB
+            
         except Exception as e:
-            print(f"⚠️ Error: {e}")
+            print(f"⚠️ Error en motor buscador: {e}")
             if conn: conn.close()
-        
-        time.sleep(5) # Esperamos 5 segundos antes de volver a conectar
+            espera_final = 30 # Si hubo error, esperamos 30s para reintentar
+
+        # El motor "duerme" para no saturar Hostinger
+        time.sleep(espera_final)
 
 if __name__ == "__main__":
-    iniciar_motor()
+    print("🔍 Motor Buscador activo y esperando tareas...")
+    while True:
+        try:
+            # Aquí llamamos a la función que revisa la tabla sys_simbolos_buscados
+            # Según tu código anterior, la función se llama 'ejecutar_motor'
+            ejecutar_motor() 
+            
+            # El sleep de 60s ya está dentro de ejecutar_motor, 
+            # pero ponemos este por si la función falla y sale.
+            time.sleep(10) 
+        except Exception as e:
+            print(f"⚠️ Reintentando motor por error: {e}")
+            time.sleep(10)
