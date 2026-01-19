@@ -128,39 +128,38 @@ def procesar_bingx(key, sec, cursor, user_id, session):
 
 # --- 5. MOTOR PRINCIPAL ---
 def motor():
-    print("🚀 Motor Pro V31 (Base Original Blindada)")
-    
-    # Session persistente para BingX
+    print("🚀 Motor Pro V31 (Conexión Blindada)")
     session = requests.Session()
-    session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
-
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
     while True:
         conn = None
         try:
             conn = mysql.connector.connect(**config.DB_CONFIG)
-            cursor = conn.cursor(dictionary=True)
+            cursor = conn.cursor(dictionary=True) # Este cursor se usará en todo el ciclo
+            
             cursor.execute("SELECT broker_name, api_key, api_secret FROM api_keys WHERE user_id = 6 AND status = 1")
             registros = cursor.fetchall()
 
             for reg in registros:
                 key = descifrar_dato(reg['api_key'], MASTER_KEY)
                 sec = descifrar_dato(reg['api_secret'], MASTER_KEY)
-                if not key or not sec: continue
-
+                
                 if reg['broker_name'].lower() == 'binance':
-                    procesar_binance(key, sec, cursor, 6)
+                    procesar_binance(key, sec, cursor, 6) # Pasamos el cursor
                 elif reg['broker_name'].lower() == 'bingx':
-                    procesar_bingx(key, sec, cursor, 6, session)
+                    procesar_bingx(key, sec, cursor, 6, session) # Pasamos el cursor
             
             conn.commit()
-            print(f"✅ Ciclo Terminado: {time.strftime('%H:%M:%S')}")
-            
-        except Exception as e: print(f"❌ Error General: {e}")
-        finally:
-            if conn and conn.is_connected():
-                cursor.close(); conn.close()
-        
-        time.sleep(120)
+            cursor.close()
+            conn.close() # Cerramos después de procesar todos los brokers
+            print(f"✅ Saldos sincronizados: {time.strftime('%H:%M:%S')}")
+            time.sleep(60)
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            if conn: conn.close()
+            time.sleep(30)
 
 if __name__ == "__main__":
     motor()
