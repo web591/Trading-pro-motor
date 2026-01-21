@@ -2,196 +2,213 @@ import mysql.connector
 import time
 import requests
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 import config
 import random
+import logging
+
+# --- CONFIGURACIÓN DE AUDITORÍA ---
+VERSION = "44.0 - Rotación de Identidad"
+UMBRAL_LIMPIEZA = 24
+
+# Silenciar logs
+logging.getLogger('yfinance').setLevel(logging.CRITICAL)
+
+# [CORRECCIÓN] LISTA DE AGENTES ROTATIVOS
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15'
+]
+
+def get_header():
+    """ Genera una identidad diferente en cada llamada """
+    return {'User-Agent': random.choice(USER_AGENTS)}
 
 def get_db_connection():
     return mysql.connector.connect(**config.DB_CONFIG)
 
-# --- ESCUDO DE ANOMALÍAS ---
-def validar_precio_logico(nombre, res, fuente, a):
-    if not res: return None, fuente
-    # Evita errores de Yahoo en activos de alta precisión
-    acciones_indices = ['T', 'GOLD', 'SILVER', 'WTI', 'DAX', 'AAPL', 'NVDA']
-    if nombre in acciones_indices:
-        if (nombre == 'T' and res['price'] < 5.0) or \
-           (nombre == 'GOLD' and res['price'] < 1000.0) or \
-           (nombre == 'SILVER' and res['price'] < 5.0) or \
-           (nombre == 'WTI' and res['price'] < 10.0):
-            
-            nuevo_res = get_yahoo_price(a['yahoo_sym'])
-            if nuevo_res:
-                return nuevo_res, "yahoo_shield"
-    return res, fuente
+# --- [NORMALIZADOR] ---
+def normalizar_ticker_yahoo(symbol):
+    correcciones = {
+        'GOLD': 'GC=F', 'SILVER': 'SI=F', 'WTI': 'CL=F',
+        'EURUSD': 'EURUSD=X', 'GBPUSD': 'GBPUSD=X', 'NZDUSD': 'NZDUSD=X', 'AUDUSD': 'AUDUSD=X',
+        'SP500': '^GSPC', 'DAX': '^GDAXI'
+    }
+    return correcciones.get(symbol, symbol)
 
-# --- FUNCIONES DE CAPTURA (Soportando tus 10 columnas) ---
-HEADERS_MOZILLA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-
-def get_binance_price(symbol, is_future=False, is_coin_m=False):
+# --- [MANTENIMIENTO DB] ---
+def limpiar_datos_viejos(conn):
     try:
-        if is_future:
-            base_url = "https://dapi.binance.com/dapi/v1/ticker/24hr" if is_coin_m else "https://fapi.binance.com/fapi/v1/ticker/24hr"
-        else:
-            base_url = "https://api.binance.com/api/v3/ticker/24hr"
-        
-        r = requests.get(f"{base_url}?symbol={symbol}", timeout=3)
+        cur = conn.cursor()
+        limite = datetime.now() - timedelta(hours=UMBRAL_LIMPIEZA)
+        cur.execute("DELETE FROM sys_precios_activos WHERE last_update < %s", (limite,))
+        conn.commit()
+        cur.close()
+    except: pass
+
+# --- [AUTO-CAZADOR] ---
+def auditoria_maestra(conn, activo_id, nombre):
+    hallazgos = {}
+    try:
+        # Prueba en Binance
+        test_bn = f"{nombre}USDT"
+        if requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={test_bn}", timeout=5).status_code == 200:
+            hallazgos['binance_spot'] = test_bn
+    except: pass
+    
+    # Prueba en Finnhub
+    try:
+        k = getattr(config, 'FINNHUB_KEY', '')
+        r = requests.get(f"https://finnhub.io/api/v1/search?q={nombre}&token={k}", timeout=5)
+        res = r.json().get('result', [])
+        if res: hallazgos['finnhub_sym'] = res[0]['symbol']
+    except: pass
+
+    if hallazgos:
+        cur = conn.cursor()
+        set_q = ", ".join([f"{k} = %s" for k in hallazgos.keys()])
+        cur.execute(f"UPDATE sys_traductor_simbolos SET {set_q} WHERE id = %s", list(hallazgos.values()) + [activo_id])
+        conn.commit()
+        cur.close()
+        return hallazgos
+    return None
+
+# --- [CAPTURADORES (Usa get_header() dinámico)] ---
+
+def get_binance(symbol, sub):
+    if not symbol: return None
+    url = f"https://{sub}.binance.com/{'api/v3' if sub=='api' else sub+'/v1'}/ticker/24hr?symbol={symbol}"
+    try:
+        r = requests.get(url, headers=get_header(), timeout=12)
         if r.status_code == 200:
             d = r.json()
             if isinstance(d, list): d = d[0]
-            return {'price': float(d['lastPrice']), 'change': float(d['priceChangePercent']), 'volume': float(d['volume'])}
-    except: return None
+            return {'p': float(d['lastPrice']), 'c': float(d['priceChangePercent']), 'v': float(d.get('quoteVolume', 0))}
+    except: pass
+    return None
 
-def get_bingx_price(symbol, version='v2'):
+def get_bingx(symbol, endpoint):
+    if not symbol: return None
+    url = f"https://open-api.bingx.com/openApi/{endpoint}/ticker/24hr?symbol={symbol}"
+    if 'swap' in endpoint: url = url.replace('ticker/24hr', 'quote/ticker')
     try:
-        path = "/openApi/swap/v2/quote/ticker" if version == 'v2' else "/openApi/swap/v1/ticker"
-        url = f"https://open-api.bingx.com{path}?symbol={symbol}"
-        r = requests.get(url, headers=HEADERS_MOZILLA, timeout=3)
+        r = requests.get(url, headers=get_header(), timeout=12)
         if r.status_code == 200:
             d = r.json()['data']
             if isinstance(d, list): d = d[0]
-            price = d.get('lastPrice') or d.get('last_price') or d.get('price')
-            change = d.get('priceChangePercent') or d.get('chg') or 0
-            vol = d.get('volume') or d.get('amount') or 0
-            return {'price': float(price), 'change': float(change), 'volume': float(vol)}
-    except: return None
-
-def get_bingx_spot(symbol):
-    try:
-        url = f"https://open-api.bingx.com/openApi/spot/v1/ticker/24hr?symbol={symbol}"
-        r = requests.get(url, headers=HEADERS_MOZILLA, timeout=3)
-        d = r.json()['data'][0]
-        return {'price': float(d['lastPrice']), 'change': float(d['priceChangePercent']), 'volume': float(d['volume'])}
-    except: return None
-
-def get_yahoo_price(symbol):
-    try:
-        t = yf.Ticker(symbol)
-        h = t.history(period="2d")
-        if len(h) < 2: return None
-        price = h['Close'].iloc[-1]
-        prev_close = h['Close'].iloc[-2]
-        change = ((price - prev_close) / prev_close) * 100
-        return {'price': float(price), 'change': float(change), 'volume': float(h['Volume'].iloc[-1])}
-    except: return None
-
-def get_finnhub_price(symbol):
-    try:
-        url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={config.FINNHUB_KEY}"
-        r = requests.get(url, timeout=3).json()
-        return {'price': float(r['c']), 'change': float(r['dp']), 'volume': 0}
-    except: return None
-
-def get_alpha_vantage_price(symbol):
-    try:
-        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={config.ALPHA_KEY}"
-        d = requests.get(url, timeout=5).json()["Global Quote"]
-        return {'price': float(d["05. price"]), 'change': float(d["10. change percent"].replace('%','')), 'volume': float(d["06. volume"])}
-    except: return None
-
-# --- ENRIQUECIMIENTO ---
-def enriquecer_datos(conn, activo):
-    try:
-        t = yf.Ticker(activo['yahoo_sym'] if activo['yahoo_sym'] else activo['nombre_comun'])
-        info = t.info
-        nombre = info.get('shortName') or info.get('longName')
-        mcap = info.get('marketCap', 0)
-        if nombre:
-            cur = conn.cursor()
-            cur.execute("INSERT INTO sys_info_activos (symbol, nombre_comercial, market_cap) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE market_cap=%s",
-                        (activo['nombre_comun'], nombre, mcap, mcap))
-            conn.commit()
-            cur.close()
+            return {'p': float(d['lastPrice']), 'c': float(d['priceChangePercent']), 'v': float(d.get('volume', 0))}
     except: pass
+    return None
 
-# --- PROCESO DE BÚSQUEDA ---
-def procesar_busquedas_pendientes():
-    conn = get_db_connection()
-    cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT * FROM sys_simbolos_buscados WHERE status = 'pendiente' LIMIT 5")
-    busquedas = cur.fetchall()
-    
-    for b in busquedas:
-        ticker = b['ticker']
-        print(f"🔍 Buscando: {ticker}...")
-        fuentes_test = [
-            ('binance_usdt_future', get_binance_price(ticker + "USDT", True)),
-            ('binance_spot', get_binance_price(ticker + "USDT", False)),
-            ('bingx_perp', get_bingx_price(ticker + "-USDT")),
-            ('yahoo_sym', get_yahoo_price(ticker))
-        ]
+def get_yahoo_v2(symbol):
+    if not symbol: return None
+    ticker_corr = normalizar_ticker_yahoo(symbol)
+    try:
+        tk = yf.Ticker(ticker_corr)
+        # yfinance gestiona sus propios headers, pero añadimos retardo natural
+        h = tk.history(period="2d", interval="1d")
+        if h.empty: return None
+        price = h['Close'].iloc[-1]
+        prev = h['Close'].iloc[-2] if len(h) > 1 else price
+        change = ((price - prev) / prev) * 100
         
-        encontrado = False
-        for f_name, res in fuentes_test:
-            if res:
-                cur.execute("""UPDATE sys_simbolos_buscados SET 
-                            status='encontrado', binance_spot=%s, binance_usdt_future=%s, 
-                            bingx_perp=%s, yahoo_sym=%s, prioridad_precio=%s, precio_referencia=%s 
-                            WHERE id=%s""", 
-                            (ticker+"USDT", ticker+"USDT", ticker+"-USDT", ticker, f_name, res['price'], b['id']))
-                encontrado = True
-                break
-        if not encontrado:
-            cur.execute("UPDATE sys_simbolos_buscados SET status='error' WHERE id=%s", (b['id'],))
+        # Fundamentales (30% probabilidad)
+        name, mcap = symbol, 0
+        if random.random() < 0.3 and "=" not in ticker_corr:
+            i = tk.info
+            name = i.get('longName', symbol)
+            mcap = i.get('marketCap', 0)
             
-    conn.commit()
-    cur.close()
-    conn.close()
+        return {'p': float(price), 'c': float(change), 'v': 0, 'n': name, 'mcap': mcap}
+    except: return None
 
-# --- MOTOR PRINCIPAL ---
-def motor_principal():
-    print(f"🚀 Motor Cuádruple V3 - Modo Ciclo - Hostinger OK")
+def get_finnhub_v2(symbol):
+    if not symbol: return None
+    k = getattr(config, 'FINNHUB_KEY', '')
+    try:
+        r = requests.get(f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={k}", headers=get_header(), timeout=10)
+        d = r.json()
+        if d.get('c'):
+            return {'p': float(d['c']), 'c': float(d['dp']), 'v': 0, 'n': symbol}
+    except: pass
+    return None
+
+# --- [CICLO PRINCIPAL] ---
+
+def ejecutar_motor():
+    print(f"🚀 MOTOR V44 | {VERSION} | {datetime.now().strftime('%H:%M:%S')}")
+    
     while True:
         try:
-            procesar_busquedas_pendientes()
             conn = get_db_connection()
             cur = conn.cursor(dictionary=True)
+            limpiar_datos_viejos(conn) # Mantenimiento Hostinger
+
             cur.execute("SELECT * FROM sys_traductor_simbolos WHERE is_active = 1")
             activos = cur.fetchall()
 
             for a in activos:
-                res_raw = None
-                f_obj = a['prioridad_precio']
+                name = a['nombre_comun']
 
-                # SELECTOR DINÁMICO
-                if f_obj == 'binance_spot': res_raw = get_binance_price(a['binance_spot'], False)
-                elif f_obj == 'binance_usdt_future': res_raw = get_binance_price(a['binance_usdt_future'], True)
-                elif f_obj == 'binance_coin_future': res_raw = get_binance_price(a['binance_coin_future'], True, True)
-                elif f_obj == 'bingx_perp': res_raw = get_bingx_price(a['bingx_perp'], 'v2')
-                elif f_obj == 'bingx_std': res_raw = get_bingx_price(a['bingx_std'], 'v1')
-                elif f_obj == 'bingx_spot': res_raw = get_bingx_spot(a['bingx_spot'])
-                elif f_obj in ['yahoo_sym', 'yfinance_sym']: res_raw = get_yahoo_price(a['yahoo_sym'])
-                elif f_obj == 'finnhub_sym': res_raw = get_finnhub_price(a['finnhub_sym'])
-                elif f_obj == 'alpha_sym': res_raw = get_alpha_vantage_price(a['alpha_sym'])
+                # 1. Auditoría de Maestra (Auto-Cazador)
+                if not a['binance_spot']:
+                    nuevos = auditoria_maestra(conn, a['id'], name)
+                    if nuevos:
+                        print(f"   🔎 [AUTO-FIX] {name} -> {list(nuevos.keys())}")
+                        for k,v in nuevos.items(): a[k]=v
 
-                # RESPALDO
-                if not res_raw:
-                    if a['binance_usdt_future']: res_raw = get_binance_price(a['binance_usdt_future'], True); f_obj="backup_bin"
-                    elif a['yahoo_sym']: res_raw = get_yahoo_price(a['yahoo_sym']); f_obj="backup_yah"
+                # 2. Mapeo de 8 URLs con Funciones Blindadas
+                rutas = [
+                    ('binance_spot', lambda: get_binance(a['binance_spot'], 'api')),
+                    ('binance_usdt_future', lambda: get_binance(a['binance_usdt_future'], 'fapi')),
+                    ('binance_coin_future', lambda: get_binance(a['binance_coin_future'], 'dapi')),
+                    ('bingx_perp', lambda: get_bingx(a['bingx_perp'], 'swap/v2')),
+                    ('bingx_std', lambda: get_bingx(a['bingx_std'], 'swap/v1')),
+                    ('bingx_spot', lambda: get_bingx(a['bingx_spot'], 'spot/v1')),
+                    ('yahoo_sym', lambda: get_yahoo_v2(a['yahoo_sym'] or name)),
+                    ('finnhub_sym', lambda: get_finnhub_v2(a['finnhub_sym'] or name))
+                ]
 
-                res, fuente_final = validar_precio_logico(a['nombre_comun'], res_raw, f_obj, a)
+                hits = 0
+                for sid, func in rutas:
+                    # Filtro inteligente: no ejecutamos si está vacío y no es Yahoo/Finnhub (que prueban con el nombre común)
+                    if not a.get(sid) and sid not in ['yahoo_sym', 'finnhub_sym']: continue
+                    
+                    res = func()
+                    if res and res['p'] > 0:
+                        # Guardar Precio
+                        cur.execute("""
+                            INSERT INTO sys_precios_activos (symbol, price, change_24h, volume_24h, source, last_update)
+                            VALUES (%s, %s, %s, %s, %s, NOW())
+                            ON DUPLICATE KEY UPDATE price=%s, change_24h=%s, volume_24h=%s, last_update=NOW()
+                        """, (name, res['p'], res['c'], res.get('v', 0), sid, res['p'], res['c'], res.get('v', 0)))
+                        
+                        # Guardar Fundamental
+                        if res.get('mcap'):
+                            cur.execute("""
+                                INSERT INTO sys_info_activos (symbol, nombre_comercial, market_cap, source_info, last_update)
+                                VALUES (%s, %s, %s, %s, NOW())
+                                ON DUPLICATE KEY UPDATE nombre_comercial=%s, market_cap=%s, source_info=%s, last_update=NOW()
+                            """, (name, res.get('n', name), res['mcap'], sid, res.get('n', name), res['mcap'], sid))
+                        hits += 1
 
-                if res:
-                    cur_upd = conn.cursor()
-                    cur_upd.execute("""
-                        INSERT INTO sys_precios_activos (symbol, price, change_24h, volume_24h, source, last_update)
-                        VALUES (%s, %s, %s, %s, %s, NOW())
-                        ON DUPLICATE KEY UPDATE price=%s, change_24h=%s, volume_24h=%s, source=%s, last_update=NOW()
-                    """, (a['nombre_comun'], res['price'], res['change'], res['volume'], fuente_final,
-                          res['price'], res['change'], res['volume'], fuente_final))
-                    conn.commit()
-                    cur_upd.close()
-                    if random.random() < 0.05: enriquecer_datos(conn, a)
-                    print(f"   📈 {a['nombre_comun']:10} | {res['price']:12.4f} | {fuente_final}")
-
-                time.sleep(0.3) # Hostinger Friendly
+                conn.commit()
+                print(f"   ✅ {name:8} | {hits}/8 fuentes OK.")
+                
+                # Pausa variable para simular humano en Hostinger
+                time.sleep(random.uniform(0.5, 1.2))
 
             cur.close()
             conn.close()
-            time.sleep(30) # Espera entre ciclos
+            print(f"--- Ciclo completo. Enfriamiento 60s ---")
+            time.sleep(60)
+
         except Exception as e:
-            print(f"❌ ERROR: {e}")
-            time.sleep(10)
+            print(f"❌ Error: {e}")
+            time.sleep(20)
 
 if __name__ == "__main__":
-    motor_principal()
+    ejecutar_motor()
