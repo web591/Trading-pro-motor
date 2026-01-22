@@ -12,4 +12,10 @@ DB_CONFIG = {
 }
 
 # Esta llave DEBE ser la misma que está en /config/security.php de PHP
-ENCRYPTION_KEY = "AQUI LA LLAVE DE ENCCRYPTION"
+ENCRYPTION_KEY = "AQUI LA LLAVE DE ENCRYPTION"
+
+# FINNHUB (Acciones USA / Forex Respaldo)
+FINNHUB_KEY = "AQUI LA LLAVE DE FINNHUB_KEY"
+
+# ALPHA VANTAGE (Commodities / Fundamentales)
+ALPHA_VANTAGE_KEY = "AQUI LA LLAVE DE ALPHA_VANTAGE_KEY"  
