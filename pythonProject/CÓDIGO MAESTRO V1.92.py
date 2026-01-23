@@ -8,7 +8,7 @@ from config import FINNHUB_KEY, ALPHA_VANTAGE_KEY
 # ==========================================================
 # 🚩 CONFIGURACIÓN DE PRUEBA
 # ==========================================================
-TICKER_PARA_PRUEBA = "USDCAD"
+TICKER_PARA_PRUEBA = "BTC"
 # ==========================================================
 
 def get_headers():
