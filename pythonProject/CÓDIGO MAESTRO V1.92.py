@@ -18,7 +18,7 @@ def get_headers():
         'Referer': 'https://finance.yahoo.com/'
     }
 
-# 1️⃣ BINANCE: 3 EJES
+# 1️⃣ BINANCE: 3 EJES mapeo_binance_V2.0
 def mapeo_binance(busqueda):
     tk = busqueda.upper().replace("-", "")
     encontrados = []

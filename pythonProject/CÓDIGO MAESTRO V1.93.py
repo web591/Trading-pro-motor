@@ -8,7 +8,7 @@ from config import FINNHUB_KEY, ALPHA_VANTAGE_KEY
 # ==========================================================
 # 🚩 CONFIGURACIÓN DE PRUEBA
 # ==========================================================
-TICKER_PARA_PRUEBA = "EURCAD"
+TICKER_PARA_PRUEBA = "BTC"
 # ==========================================================
 
 def get_headers():
@@ -18,7 +18,7 @@ def get_headers():
         'Referer': 'https://finance.yahoo.com/'
     }
 
-# 1️⃣ BINANCE: 3 EJES
+# 1️⃣ BINANCE: 3 EJES mapeo_binance_v2.0
 def mapeo_binance(busqueda):
     tk = busqueda.upper().replace("-", "")
     encontrados = []
@@ -39,7 +39,7 @@ def mapeo_binance(busqueda):
         except: continue
     return encontrados
 
-# 2️⃣ BINGX: INTEGRAL
+# 2️⃣ BINGX: INTEGRAL mapeo_bingx_v2.0
 def mapeo_bingx(busqueda):
     # Limpiamos la búsqueda: de "EUR/USD" o "EURUSD=X" a "EURUSD"
     tk_search = busqueda.upper().replace("/", "").replace("-", "").replace("=X", "")
@@ -107,7 +107,7 @@ def mapeo_bingx(busqueda):
             
     return encontrados
             
-# 3️⃣ YAHOO: DISCOVERY
+# 3️⃣ YAHOO: DISCOVERY mapeo_yahoo_v1.0
 def mapeo_yahoo(busqueda):
     encontrados = []
     try:
@@ -123,7 +123,7 @@ def mapeo_yahoo(busqueda):
     except: pass
     return encontrados
 
-# 4️⃣ FINNHUB V1.7 (CON FOREX OANDA Y CRYPTO BINANCE)
+# 4️⃣ FINNHUB V1.7 (CON FOREX OANDA Y CRYPTO BINANCE) mapeo_finnhub_v2.0
 def mapeo_finnhub(busqueda):
     """
     Escáner de 3 niveles: 
@@ -200,7 +200,7 @@ def mapeo_finnhub(busqueda):
 
     return encontrados
 
-# 5️⃣ ALPHA VANTAGE
+# 5️⃣ ALPHA VANTAGE mapeo_alpha_vantage_v1.1
 def mapeo_alpha(busqueda):
     encontrados = []
     try:
@@ -220,7 +220,7 @@ def mapeo_alpha(busqueda):
 # 🧠 ENSAMBLADOR V1.6
 # ==========================================================
 def ejecutor_maestro_v1_6():
-    print(f"💎 CÓDIGO MAESTRO V1.92 - FILTRADO FINNHUB FX/CRYPTO")
+    print(f"💎 CÓDIGO MAESTRO V1.93 - FILTRADO FINNHUB FX/CRYPTO")
     print(f"🔍 ESCANEANDO: {TICKER_PARA_PRUEBA}")
     print("-" * 125)
     
