@@ -8,7 +8,7 @@ from config import FINNHUB_KEY, ALPHA_VANTAGE_KEY
 # ==========================================================
 # 🚩 CONFIGURACIÓN DE PRUEBA
 # ==========================================================
-TICKER_PARA_PRUEBA = "SOL"
+TICKER_PARA_PRUEBA = "AMZN"
 # ==========================================================
 
 def get_headers():

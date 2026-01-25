@@ -13,9 +13,7 @@ from config import FINNHUB_KEY, ALPHA_VANTAGE_KEY, DB_CONFIG
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1'
+    'Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0'
 ]
 
 def get_db_connection():
@@ -172,35 +170,27 @@ def mapeo_alpha(busqueda):
     return encontrados
 
 # ==========================================================
-# 💾 PERSISTENCIA: MODO REUTILIZACIÓN (CERO BASURA)
+# 💾 PERSISTENCIA (PROTECCIÓN ANTI-DUPLICADOS)
 # ==========================================================
 def guardar_resultados_db(resultados, busqueda_id, nombre_comun):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        # REGLA: Si el motor y ticker ya existen para este activo, actualizamos el ID y el precio
-        # Si no existen, los insertamos.
-        query = """
-            INSERT INTO sys_busqueda_resultados (busqueda_id, nombre_comun, motor, ticker, precio, info)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE 
-            busqueda_id = VALUES(busqueda_id),
-            precio = VALUES(precio),
-            fecha_actualizacion = CURRENT_TIMESTAMP
-        """
-        for r in resultados:
-            cursor.execute(query, (busqueda_id, nombre_comun, r['Motor'], r['Ticker'], r['Precio'], r['Info']))
+        # Borramos cualquier residuo de esta búsqueda antes de insertar
+        cursor.execute("DELETE FROM sys_busqueda_resultados WHERE busqueda_id = %s", (busqueda_id,))
+        query = "INSERT INTO sys_busqueda_resultados (busqueda_id, nombre_comun, motor, ticker, precio, info) VALUES (%s, %s, %s, %s, %s, %s)"
+        for res in resultados:
+            cursor.execute(query, (busqueda_id, nombre_comun, res['Motor'], res['Ticker'], res['Precio'], res['Info']))
         conn.commit()
         cursor.close()
         conn.close()
-    except Exception as e:
-        print(f"❌ Error DB: {e}")
+    except Exception as e: print(f"❌ Error DB: {e}")
 
 # ==========================================================
-# 🔄 BUCLE MAESTRO CON DEPURACIÓN CADA 2 HORAS
+# 🔄 BUCLE MAESTRO (CON LIMPIEZA AUTOMÁTICA)
 # ==========================================================
 def ejecutar_bucle_buscador():
-    print("💎 MAESTRO V3.01 - LIMPIEZA CADA 2 HORAS ACTIVA")
+    print("💎 MAESTRO V3.00 - ENSAMBLADOR V1.6 ACTIVO")
     
     while True:
         conn = None
@@ -208,12 +198,10 @@ def ejecutar_bucle_buscador():
             conn = get_db_connection()
             cur = conn.cursor(dictionary=True)
 
-            # --- 🧹 DEPURACIÓN AUTOMÁTICA (MANTENIMIENTO) ---
-            # Borra todo lo que nadie ha buscado o actualizado en las últimas 2 horas
-            cur.execute("DELETE FROM sys_busqueda_resultados WHERE fecha_actualizacion < NOW() - INTERVAL 2 HOUR")
+            # --- 🧹 MANTENIMIENTO: Borrar lo que tenga más de 24 horas ---
+            cur.execute("DELETE FROM sys_busqueda_resultados WHERE fecha_actualizacion < NOW() - INTERVAL 1 DAY")
             conn.commit()
 
-            # Revisar si hay tareas pendientes
             cur.execute("SELECT id, ticker FROM sys_simbolos_buscados WHERE status = 'pendiente' ORDER BY id ASC LIMIT 1")
             tarea = cur.fetchone()
             
@@ -224,21 +212,21 @@ def ejecutar_bucle_buscador():
                 conn.commit()
 
                 print("\n" + "═"*120)
-                print(f"🔍 TAREA #{id_tarea}: {tk_busqueda}")
-
-                # --- LÓGICA DE REUTILIZACIÓN ---
-                cur.execute("SELECT motor, ticker, precio, info FROM sys_busqueda_resultados WHERE nombre_comun = %s", (tk_busqueda,))
+                print(f"🔍 PROCESANDO: {tk_busqueda} (Tarea #{id_tarea})")
+                
+                # --- LÓGICA DE CACHÉ INTELIGENTE ---
+                cur.execute("SELECT motor, ticker, precio, info FROM sys_busqueda_resultados WHERE nombre_comun = %s GROUP BY motor, ticker", (tk_busqueda,))
                 cache = cur.fetchall()
+                consolidado = []
 
                 if cache:
-                    print(f"♻️  REUTILIZANDO: Pasando resultados existentes a la solicitud #{id_tarea}")
-                    # Actualizamos los registros para que el PHP los vea bajo el nuevo ID
-                    cur.execute("UPDATE sys_busqueda_resultados SET busqueda_id = %s WHERE nombre_comun = %s", (id_tarea, tk_busqueda))
-                    conn.commit()
-                    consolidado = [{"Motor": c['motor'], "Ticker": c['ticker'], "Precio": c['precio'], "Info": c['info']} for c in cache]
+                    print(f"🧠 CACHÉ: Vinculando datos existentes a Solicitud #{id_tarea}...")
+                    for c in cache:
+                        consolidado.append({"Motor": c['motor'], "Ticker": c['ticker'], "Precio": float(c['precio']), "Info": c['info']})
+                    # Guardamos (esto borra basura del ID actual y vincula lo nuevo)
+                    guardar_resultados_db(consolidado, id_tarea, tk_busqueda)
                 else:
-                    print(f"📡 API: Buscando en vivo por primera vez...")
-                    consolidado = []
+                    print(f"📡 API: Consultando motores en vivo...")
                     consolidado.extend(mapeo_binance(tk_busqueda))
                     consolidado.extend(mapeo_bingx(tk_busqueda))
                     consolidado.extend(mapeo_yahoo(tk_busqueda))
@@ -246,22 +234,24 @@ def ejecutar_bucle_buscador():
                     consolidado.extend(mapeo_alpha(tk_busqueda))
                     guardar_resultados_db(consolidado, id_tarea, tk_busqueda)
 
-                # Vista en Terminal (Pandas)
+                # --- VISTA TERMINAL (PANDAS) ---
+                print("-" * 120)
                 if consolidado:
-                    print("-" * 120)
-                    print(pd.DataFrame(consolidado)[["Motor", "Ticker", "Precio", "Info"]].to_string(index=False))
-                
-                cur.execute("UPDATE sys_simbolos_buscados SET status = 'encontrado' WHERE id = %s", (id_tarea,))
-                conn.commit()
+                    df = pd.DataFrame(consolidado)
+                    print(df[["Motor", "Ticker", "Precio", "Info"]].to_string(index=False))
+                else:
+                    print(f"❌ Sin hallazgos para {tk_busqueda}")
                 print("═"*120)
 
+                cur.execute("UPDATE sys_simbolos_buscados SET status = 'encontrado' WHERE id = %s", (id_tarea,))
+                conn.commit()
+            
             cur.close()
             conn.close()
         except Exception as e:
             print(f"⚠️ Error: {e}")
-            if conn: conn.close()
         
-        time.sleep(60) # Pausa de Hostinger (1 minuto)
+        time.sleep(60) # Pausa de seguridad Hostinger
 
 if __name__ == "__main__":
     ejecutar_bucle_buscador()
