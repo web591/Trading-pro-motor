@@ -34,14 +34,14 @@ def get_headers():
 # 🧠 ESPACIO PARA TUS MOTORES (Copia aquí tus mapeo_... de V1.98)
 # ==========================================================
 
-# 1️⃣ BINANCE: 3 EJES mapeo_binance_v2.0
+# 🚀 1️⃣ BINANCE: 3 EJES (Versión con Info Robusta)
 def mapeo_binance(busqueda):
     tk = busqueda.upper().replace("-", "")
     encontrados = []
     hosts = [
-        ("BIN_SPOT", "https://api.binance.com/api/v3/ticker/price"),
-        ("BIN_USDT_F", "https://fapi.binance.com/fapi/v1/ticker/price"),
-        ("BIN_COIN_F", "https://dapi.binance.com/dapi/v1/ticker/price")
+        ("binance_spot", "https://api.binance.com/api/v3/ticker/price"),
+        ("binance_usdt_future", "https://fapi.binance.com/fapi/v1/ticker/price"),
+        ("binance_coin_future", "https://dapi.binance.com/dapi/v1/ticker/price")
     ]
     for mkt, url in hosts:
         try:
@@ -51,11 +51,24 @@ def mapeo_binance(busqueda):
                 sym = i.get('symbol','')
                 if tk in sym:
                     if mkt == "BIN_SPOT" and not (sym.endswith("USDT") or sym.endswith("USDC")): continue
-                    encontrados.append({"Motor": mkt, "Ticker": sym, "Precio": i.get('price', i.get('lastPrice')), "Info": "Crypto Pair"})
+                    
+                    # Obtenemos el precio
+                    precio_crudo = i.get('price', i.get('lastPrice', 0))
+                    
+                    # --- AQUÍ ESTÁ EL CAMBIO ---
+                    # Si no hay una descripción, usamos "Crypto Pair: " seguido del nombre del Ticker
+                    info_backup = f"Crypto Pair: {sym}"
+                    
+                    encontrados.append({
+                        "Motor": mkt, 
+                        "Ticker": sym, 
+                        "Precio": precio_crudo, 
+                        "Info": info_backup
+                    })
         except: continue
     return encontrados
 
-# 2️⃣ BINGX: INTEGRAL mapeo_bingx_v2.0
+# 🚀 2️⃣ BINGX: INTEGRAL (Versión con Info Robusta)
 def mapeo_bingx(busqueda):
     # Limpiamos la búsqueda: de "EUR/USD" o "EURUSD=X" a "EURUSD"
     tk_search = busqueda.upper().replace("/", "").replace("-", "").replace("=X", "")
@@ -70,7 +83,6 @@ def mapeo_bingx(busqueda):
     }
     
     # 2. DETERMINAR RAÍCES DE BÚSQUEDA
-    # Si es Forex (6 letras), buscamos tanto el par completo como la moneda base
     familia_adn = identidades.get(tk_search, [tk_search])
     if len(tk_search) == 6 and not tk_search.isdigit():
         base_currency = tk_search[:3] # Ejemplo: EUR de EURUSD
@@ -78,8 +90,8 @@ def mapeo_bingx(busqueda):
             familia_adn.append(base_currency)
 
     mercados = [
-        ("BINGX_PERP", "https://open-api.bingx.com/openApi/swap/v2/quote/ticker"),
-        ("BINGX_SPOT", "https://open-api.bingx.com/openApi/spot/v1/market/ticker")
+        ("bingx_std", "https://open-api.bingx.com/openApi/swap/v2/quote/ticker"),
+        ("bingx_spot", "https://open-api.bingx.com/openApi/spot/v1/market/ticker")
     ]
 
     for nombre_mkt, url in mercados:
@@ -90,41 +102,45 @@ def mapeo_bingx(busqueda):
             for i in items:
                 sym_orig = i.get('symbol', '').upper()
                 # Limpieza total del símbolo de BingX para comparar
-                # Quitamos prefijos institucionales y monedas de pago
                 sym_fix = sym_orig.replace("NCFX", "").replace("NCCO", "").replace("NCSK", "")
                 sym_fix = sym_fix.replace("-USDT", "").replace("USDT", "").replace("-USDC", "").replace("USDC", "").replace("-", "")
 
                 match_hallado = False
                 for adn in familia_adn:
-                    # REGLA MAESTRA:
-                    # Si el símbolo limpio es IGUAL al ADN (EURUSD == EURUSD)
-                    # O si el símbolo limpio es el par sintético (AAPLX == AAPL + X)
                     if sym_fix == adn or sym_fix == f"{adn}X" or sym_fix == tk_search:
                         match_hallado = True
                         break
-                    # Caso especial para Forex en BingX (NCFXEURUSD)
                     if adn in sym_orig and ("NCFX" in sym_orig or "NCCO" in sym_orig):
                         match_hallado = True
                         break
 
                 if match_hallado:
-                    # FILTRO ANTI-RUIDO (No queremos GASOLINE si buscamos SOL)
+                    # FILTRO ANTI-RUIDO
                     if tk_search == "SOL" and "GASOLINE" in sym_orig: continue
                     
                     precio = i.get('lastPrice') or i.get('price')
                     if precio and float(precio) > 0:
+                        
+                        # --- MEJORA DE INFO ---
+                        # Identificamos qué tipo de activo es para la descripción
+                        tipo = "Standard Asset"
+                        if "NCFX" in sym_orig: tipo = "Forex / Global FX"
+                        elif "NCCO" in sym_orig: tipo = "Commodity / Index"
+                        elif sym_orig.endswith("X"): tipo = "Synthetic Stock"
+                        
+                        info_final = f"BingX {tipo}: {sym_orig}"
+
                         encontrados.append({
                             "Motor": nombre_mkt,
                             "Ticker": sym_orig,
                             "Precio": precio,
-                            "Info": "ADN Auto-Verificado"
+                            "Info": info_final # <-- Info siempre llena
                         })
         except: continue
             
     return encontrados
             
-# 3️⃣ YAHOO: DISCOVERY mapeo_yahoo_v2.0
-# 3️⃣ YAHOO: DISCOVERY mapeo_yahoo_v2.0
+# 🚀 3️⃣ YAHOO: DISCOVERY (Versión con Info Robusta y Blindaje)
 def mapeo_yahoo(busqueda):
     encontrados = []
     # Lista de endpoints para redundancia
@@ -136,7 +152,6 @@ def mapeo_yahoo(busqueda):
     headers = get_headers()
     
     # --- 1. ESPERA INICIAL ---
-    # Un pequeño respiro antes de empezar para que no parezca ráfaga
     time.sleep(random.uniform(1.0, 2.0))
     
     for url in urls:
@@ -147,24 +162,30 @@ def mapeo_yahoo(busqueda):
             
             # Procesamos los resultados (Limitamos a 7)
             for q in quotes[:7]:
-                sym = q['symbol']
+                sym = q.get('symbol')
+                if not sym: continue
+
                 try:
                     # --- 2. ESPERA POR CADA TICKER (CRÍTICO) ---
-                    # Esto evita que Yahoo vea 7 peticiones en el mismo milisegundo
                     time.sleep(random.uniform(0.5, 1.2)) 
                     
                     t = yf.Ticker(sym)
                     p = t.fast_info['last_price']
                     
-                    tipo = q.get('quoteType', 'N/A')
+                    # --- MEJORA DE INFO Y BLINDAJE ---
+                    tipo = q.get('quoteType', 'Asset')
                     exchange = q.get('exchDisp', 'Global')
-                    nombre = q.get('shortname', q.get('longname', 'Asset'))
+                    # Buscamos el nombre corto, si no el largo, si no el ticker
+                    nombre = q.get('shortname') or q.get('longname') or sym
+                    
+                    # Construimos la descripción final
+                    info_final = f"[{tipo}] {nombre} ({exchange})"
                     
                     encontrados.append({
-                        "Motor": "YAHOO",
+                        "Motor": "yahoo_sym",
                         "Ticker": sym,
-                        "Precio": f"{p:.4f}" if p else "N/A", # Usamos 4 decimales como acordamos
-                        "Info": f"[{tipo}] {nombre} ({exchange})"
+                        "Precio": f"{p:.4f}" if p else "0.0000",
+                        "Info": info_final # <-- Garantizado que nunca sea nulo
                     })
                 except: 
                     continue
@@ -172,14 +193,13 @@ def mapeo_yahoo(busqueda):
             if encontrados: break 
             
         except Exception as e:
-            # Si hay error, esperamos un poco más antes de intentar con la siguiente URL
             time.sleep(2)
             print(f"    ⚠️ Reintentando Yahoo por bloqueo en endpoint...")
             continue
             
     return encontrados
 
-# 4️⃣ FINNHUB V1.7 (CON FOREX OANDA Y CRYPTO BINANCE) mapeo_finnhub_v2.0
+# 🚀 4️⃣ FINNHUB V1.7 (Versión con Info Robusta y Blindaje)
 def mapeo_finnhub(busqueda):
     """
     Escáner de 3 niveles: 
@@ -190,26 +210,26 @@ def mapeo_finnhub(busqueda):
     tk = busqueda.upper()
     encontrados = []
     
-    # --- NIVEL 1: BÚSQUEDA GENERAL (No se quita) ---
+    # --- NIVEL 1: BÚSQUEDA GENERAL ---
     try:
         url_gen = f"https://finnhub.io/api/v1/search?q={tk}&token={FINNHUB_KEY}"
         r_gen = requests.get(url_gen, timeout=10).json()
-        # Tomamos los 3 resultados más relevantes del buscador general
         for i in r_gen.get('result', [])[:3]:
             sym = i['symbol']
             q = requests.get(f"https://finnhub.io/api/v1/quote?symbol={sym}&token={FINNHUB_KEY}").json()
             if q.get('c'):
+                # Respaldo de descripción
+                desc = i.get('description') or f"Asset: {sym}"
                 encontrados.append({
-                    "Motor": "FINNHUB_GEN", 
+                    "Motor": "finnhub_sym", 
                     "Ticker": sym, 
                     "Precio": q['c'], 
-                    "Info": i['description']
+                    "Info": desc
                 })
     except Exception as e:
-        print(f"   ⚠️ Error en Finnhub General: {e}")
+        print(f"    ⚠️ Error en Finnhub General: {e}")
 
     # --- NIVEL 2: FOREX / METALES (OANDA) ---
-    # Traductor de emergencia para activos comunes
     traductores = {"GOLD": "XAU_USD", "SILVER": "XAG_USD", "EURUSD": "EUR_USD"}
     target_fx = traductores.get(tk, tk)
 
@@ -218,19 +238,20 @@ def mapeo_finnhub(busqueda):
         r_fx = requests.get(url_fx, timeout=10).json()
         if isinstance(r_fx, list):
             for s in r_fx:
-                # Buscamos coincidencia en el símbolo (ej: XAU_USD)
                 if target_fx in s['symbol'] or tk in s['displaySymbol']:
                     q = requests.get(f"https://finnhub.io/api/v1/quote?symbol={s['symbol']}&token={FINNHUB_KEY}").json()
                     if q.get('c'):
+                        # Blindaje de descripción
+                        desc = s.get('description') or f"Forex Pair {s['symbol']}"
                         encontrados.append({
-                            "Motor": "FINNHUB_FX", 
+                            "Motor": "finnhub_sym", 
                             "Ticker": s['symbol'], 
                             "Precio": q['c'], 
-                            "Info": f"OANDA: {s['description']}"
+                            "Info": f"OANDA: {desc}"
                         })
-                    break # Encontramos el par principal de Forex, paramos.
+                    break 
     except Exception as e:
-        print(f"   ⚠️ Error en Finnhub Forex: {e}")
+        print(f"    ⚠️ Error en Finnhub Forex: {e}")
 
     # --- NIVEL 3: CRYPTO (BINANCE FEED) ---
     try:
@@ -239,24 +260,25 @@ def mapeo_finnhub(busqueda):
         if isinstance(r_cry, list):
             count = 0
             for s in r_cry:
-                # Filtramos para que sea el ticker buscado contra USDT o USDC
                 if tk in s['symbol'] and ("USDT" in s['symbol'] or "USDC" in s['symbol']):
                     q = requests.get(f"https://finnhub.io/api/v1/quote?symbol={s['symbol']}&token={FINNHUB_KEY}").json()
                     if q.get('c'):
+                        # Blindaje de descripción
+                        desc = s.get('description') or f"Crypto {s['symbol']}"
                         encontrados.append({
-                            "Motor": "FINNHUB_CRY", 
+                            "Motor": "finnhub_sym", 
                             "Ticker": s['symbol'], 
                             "Precio": q['c'], 
-                            "Info": f"BINANCE: {s['description']}"
+                            "Info": f"BINANCE: {desc}"
                         })
                     count += 1
-                    if count >= 2: break # No saturar con mil pares de crypto
+                    if count >= 2: break 
     except Exception as e:
-        print(f"   ⚠️ Error en Finnhub Crypto: {e}")
+        print(f"    ⚠️ Error en Finnhub Crypto: {e}")
 
     return encontrados
 
-# 5️⃣ ALPHA VANTAGE mapeo_alpha_vantage_v2.3
+# 🚀 5️⃣ ALPHA VANTAGE: DISCOVERY (Versión con Info Robusta y Blindaje)
 def mapeo_alpha(busqueda):
     encontrados = []
     tk = busqueda.upper().replace("/", "")
@@ -266,50 +288,55 @@ def mapeo_alpha(busqueda):
         url_s = f"https://www.alphavantage.co/query?function=SYMBOL_SEARCH&keywords={tk}&apikey={ALPHA_VANTAGE_KEY}"
         res_s = requests.get(url_s, timeout=10).json()
         
-        # Si Alpha nos avisa del límite, lo reportamos para que sepas por qué no hay datos
         if "Note" in res_s:
-            print("   ⚠️ Alpha Vantage: Límite de créditos alcanzado (Espera 1 min).")
+            print("    ⚠️ Alpha Vantage: Límite de créditos alcanzado (Espera 1 min).")
             return encontrados
 
         matches = res_s.get('bestMatches', [])
-        for match in matches[:3]: # Revisamos los 3 mejores
-            sym = match['1. symbol']
-            tipo = match['3. type']
-            nombre = match['2. name']
-            region = match['4. region']
+        for match in matches[:3]: 
+            sym = match.get('1. symbol')
+            if not sym: continue
+
+            tipo = match.get('3. type', 'Equity')
+            nombre = match.get('2. name') or sym
+            region = match.get('4. region', 'Global')
             
-            # PRIORIDAD: Si es Acción (Equity) o ETF, queremos ese Ticker
-            precio = "N/A"
+            precio = 0.0
             
-            # Intentamos buscar el precio para validar que el ticker está activo
+            # Intentamos buscar el precio
             try:
                 if "Currency" in tipo:
-                    # Lógica de Forex/Crypto (visto en V1.96)
+                    # Lógica de Forex/Crypto
                     base, quoted = (sym[:3], sym[3:]) if "/" not in sym else sym.split("/")
                     url_p = f"https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency={base}&to_currency={quoted}&apikey={ALPHA_VANTAGE_KEY}"
                     r_p = requests.get(url_p).json().get('Realtime Currency Exchange Rate', {})
-                    precio = r_p.get('5. Exchange Rate')
+                    p_val = r_p.get('5. Exchange Rate')
                 else:
                     # Lógica de Acciones/ETFs
                     url_p = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={sym}&apikey={ALPHA_VANTAGE_KEY}"
                     r_p = requests.get(url_p).json().get('Global Quote', {})
-                    precio = r_p.get('05. price')
+                    p_val = r_p.get('05. price')
+                
+                if p_val:
+                    precio = float(str(p_val).replace(',', ''))
             except:
-                precio = "N/A" # Si falla el precio, no morimos, seguimos para darte el Ticker
+                precio = 0.0
 
-            # AGREGAR A LA TABLA (Aunque el precio sea N/A, el Ticker es lo que te interesa)
+            # --- MEJORA DE INFO Y BLINDAJE ---
+            # Aseguramos que Info nunca sea nulo y describa bien el activo
+            info_final = f"[{tipo}] {nombre} ({region})"
+
             encontrados.append({
-                "Motor": "ALPHA",
+                "Motor": "alpha_sym",
                 "Ticker": sym,
-                "Precio": f"{float(precio):.2f}" if precio and precio != "N/A" else "N/A",
-                "Info": f"[{tipo}] {nombre} ({region})"
+                "Precio": precio,
+                "Info": info_final # <-- Blindado
             })
             
-            # Pausa obligatoria entre llamadas de la misma función
             time.sleep(1.5) 
 
     except Exception as e:
-        print(f"   ⚠️ Error en Alpha: {e}")
+        print(f"    ⚠️ Error en Alpha: {e}")
         
     return encontrados
 
@@ -318,15 +345,9 @@ def mapeo_alpha(busqueda):
 # ==========================================================
 
 def guardar_en_resultados_db(conn, hallazgos, id_tarea, busqueda_original):
-    """
-    Inserta o ACTUALIZA los hallazgos. 
-    Maneja limpieza de decimales y evita duplicados en la misma ventana de tiempo.
-    """
     try:
         cur = conn.cursor()
-        
-        # Usamos ON DUPLICATE KEY UPDATE para que si el motor y el ticker ya existen
-        # para esa búsqueda, simplemente actualice el precio y la info.
+        # Esta instrucción inserta o actualiza si ya existe el ticker para este activo
         query = """INSERT INTO sys_busqueda_resultados 
                    (busqueda_id, nombre_comun, motor, ticker, precio, info) 
                    VALUES (%s, %s, %s, %s, %s, %s)
@@ -337,31 +358,27 @@ def guardar_en_resultados_db(conn, hallazgos, id_tarea, busqueda_original):
                    fecha_hallazgo = CURRENT_TIMESTAMP"""
         
         for h in hallazgos:
-            # --- LIMPIEZA DE DECIMALES ---
             try:
-                # Quitamos comas y nos aseguramos de que sea un float puro
+                # Limpiamos el precio: quitamos comas y convertimos a número
                 p_str = str(h['Precio']).replace(',', '').strip()
                 precio_clean = float(p_str)
-            except (ValueError, TypeError):
-                precio_clean = 0.00000000 # Mantener precisión de 8 decimales
+            except:
+                precio_clean = 0.0
 
-            # Ejecución
             cur.execute(query, (
                 id_tarea, 
                 busqueda_original.upper(), 
                 h['Motor'], 
                 h['Ticker'], 
                 precio_clean, 
-                h['Info']
+                h['Info'] if h['Info'] else h['Ticker'] # Respaldo de Info
             ))
             
         conn.commit()
         cur.close()
-        print(f"   ✅ DB: {len(hallazgos)} resultados procesados (Modo: Inteligente)")
-        
     except Exception as e:
-        print(f"    ⚠️ Error al insertar en sys_busqueda_resultados: {e}")
-        
+        print(f"    ⚠️ Error en DB: {e}")
+
 # ==========================================================
 # 🧹 FUNCIÓN DE MANTENIMIENTO
 # ==========================================================
@@ -381,11 +398,11 @@ def limpiar_resultados_antiguos(conn):
         print(f"⚠️ Error en limpieza: {e}")
 
 # ==========================================================
-# 🚀 ORQUESTADOR V1.99 - EL CEREBRO CON MEMORIA Y AUTOLIMPIEZA
+# 🚀 ORQUESTADOR V2.00 - EL CEREBRO CON MEMORIA Y AUTOLIMPIEZA
 # ==========================================================
 
 def bucle_operativo():
-    print(f"💎 MOTOR MAESTRO V1.99 - ONLINE (Memoria Inteligente + Sync Web)")
+    print(f"💎 MOTOR MAESTRO V2.00 - ONLINE (Memoria Inteligente + Sync Web)")
     print(f"📡 Escaneando tareas en sys_simbolos_buscados...")
     
     conn = None 
