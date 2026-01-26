@@ -422,8 +422,7 @@ def bucle_operativo():
                     except: pass
                 conn = mysql.connector.connect(**DB_CONFIG)
 
-            # Usamos un cursor que se asegure de limpiar resultados previos
-            cur = conn.cursor(dictionary=True, buffered=True)
+            cur = conn.cursor(dictionary=True)
             
             # 2. BUSCAR TAREA PENDIENTE
             cur.execute("SELECT id, ticker FROM sys_simbolos_buscados WHERE status = 'pendiente' LIMIT 1")
@@ -433,22 +432,15 @@ def bucle_operativo():
                 id_tarea = tarea['id']
                 tk_busqueda = tarea['ticker'].upper().strip()
                 
-                # --- [CORRECCIÓN CRÍTICA] ---
-                # Marcamos como 'procesando' de inmediato. 
-                # Si no hacemos esto, el siguiente ciclo del loop volverá a leer esta misma tarea.
-                cur.execute("UPDATE sys_simbolos_buscados SET status = 'procesando' WHERE id = %s", (id_tarea,))
-                conn.commit() 
-                
                 print(f"\n🎯 TAREA RECIBIDA: {tk_busqueda} (ID: {id_tarea})")
                 
                 # --- LÓGICA DE MEMORIA V3.16 ---
-                # Buscamos si ya tenemos este ticker guardado de búsquedas de otros usuarios
                 query_memoria = "SELECT motor, ticker, precio, info FROM sys_busqueda_resultados WHERE nombre_comun = %s LIMIT 20"
                 cur.execute(query_memoria, (tk_busqueda,))
                 existentes = cur.fetchall()
 
                 if existentes:
-                    print(f"🧠 MEMORIA: {tk_busqueda} encontrada. Sincronizando con Web...")
+                    print(f"🧠 MEMORIA: {tk_busqueda} encontrada. Sincronizando con Web (ID: {id_tarea})...")
                     
                     for fila in existentes:
                         sql_insert = """INSERT INTO sys_busqueda_resultados 
@@ -458,17 +450,26 @@ def bucle_operativo():
                             id_tarea, tk_busqueda, fila['motor'], fila['ticker'], fila['precio'], fila['info']
                         ))
                     
-                    # Actualizar a encontrado
+                    print("\n" + "═"*110)
+                    df_p = pd.DataFrame(existentes)
+                    df_p.columns = [c.upper() for c in df_p.columns]
+                    df_p['PRECIO'] = df_p['PRECIO'].apply(lambda x: f"{float(x):.4f}")
+                    print(df_p.to_string(index=False))
+                    print("═"*110)
+                    
                     cur.execute("UPDATE sys_simbolos_buscados SET status = 'encontrado' WHERE id = %s", (id_tarea,))
                     conn.commit() 
                     print(f"✅ Web Actualizada vía Memoria.")
                 
                 else:
-                    # --- BÚSQUEDA NUEVA EN MERCADOS ---
+                    # --- BÚSQUEDA FRESKA ---
                     print(f"🔍 No hay registros para {tk_busqueda}. Interrogando mercados...")
+                    print("-" * 110)
                     
+                    cur.execute("UPDATE sys_simbolos_buscados SET status = 'buscando' WHERE id = %s", (id_tarea,))
+                    conn.commit()
+
                     consolidado = []
-                    # Lista de funciones de búsqueda
                     motores = [
                         ("Binance", mapeo_binance), ("BingX", mapeo_bingx), 
                         ("Yahoo", mapeo_yahoo), ("Finnhub", mapeo_finnhub), ("Alpha", mapeo_alpha)
@@ -482,36 +483,46 @@ def bucle_operativo():
                                 consolidado.extend(res)
                                 print("✅")
                             else: print("❌")
-                        except Exception as e: 
-                            print(f"⚠️ Error: {e}")
+                        except: print("⚠️")
 
                     if consolidado:
-                        # Guardar resultados nuevos en la BD
+                        print("\n" + "═"*110)
+                        df = pd.DataFrame(consolidado)
+                        df['Precio'] = df['Precio'].apply(lambda x: f"{float(str(x).replace(',', '')):.4f}")
+                        print(df[["Motor", "Ticker", "Precio", "Info"]].to_string(index=False))
+                        print("═"*110)
+                        
                         guardar_en_resultados_db(conn, consolidado, id_tarea, tk_busqueda)
                         cur.execute("UPDATE sys_simbolos_buscados SET status = 'encontrado' WHERE id = %s", (id_tarea,))
-                        print(f"✅ Sincronización exitosa.")
+                        print(f"✅ Sincronización exitosa (Nuevos datos).")
                     else:
                         cur.execute("UPDATE sys_simbolos_buscados SET status = 'error' WHERE id = %s", (id_tarea,))
                 
-                # --- FINALIZACIÓN ---
+                # --- FIN DE TAREA: LIMPIEZA POST-OPERATIVA ---
                 conn.commit()
-                print(f"⏳ Tarea finalizada. Esperando nueva orden...")
+                limpiar_resultados_antiguos(conn) # <--- Aquí limpia después de cada ticker
+                
+                print(f"⏳ Esperando 10 segundos...")
+                time.sleep(10)
 
             else:
-                # No hay tareas: Limpieza y espera
-                limpiar_resultados_antiguos(conn)
+                # --- MODO REPOSO: LIMPIEZA PERIÓDICA ---
+                limpiar_resultados_antiguos(conn) # <--- Aquí limpia mientras espera tareas
                 print(".", end="", flush=True)
-                time.sleep(5) # Espera 5 segundos antes de volver a mirar la base de datos
+                time.sleep(60) 
 
             cur.close()
 
         except mysql.connector.Error as err:
-            print(f"\n❌ Error de Base de Datos: {err}")
-            conn = None # Forzar reconexión en el siguiente ciclo
-            time.sleep(5)
+            if err.errno == 1226:
+                print("\n⚠️ Límite Hostinger. Pausa 5 min...")
+                time.sleep(300)
+            else:
+                conn = None
+                time.sleep(10)
         except Exception as e:
-            print(f"\n⚠️ Error inesperado: {e}")
-            time.sleep(5)
+            print(f"\n⚠️ Error crítico: {e}")
+            time.sleep(10)
 
 # ==========================================================
 # 🏁 LANZADOR
