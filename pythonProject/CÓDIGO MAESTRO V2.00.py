@@ -3,29 +3,36 @@ import time
 import random
 import pandas as pd
 import yfinance as yf
-from config import FINNHUB_KEY, ALPHA_VANTAGE_KEY
+import mysql.connector
+from datetime import datetime
+from config import FINNHUB_KEY, ALPHA_VANTAGE_KEY, DB_CONFIG
 
 # ==========================================================
-# 🚩 CONFIGURACIÓN DE PRUEBA
+# 🚩 CONFIGURACIÓN Y CABECERAS (V1.98)
 # ==========================================================
-TICKER_PARA_PRUEBA = "IBM"
-# ==========================================================
-
-MOZILLA_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.1; rv:109.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1"
-]
-
 def get_headers():
     return {
-        'User-Agent': random.choice(MOZILLA_AGENTS),
-        'Accept': 'application/json',
-        'Referer': 'https://finance.yahoo.com/'
+        # Identidad: Chrome 120 (más actual)
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        
+        # Qué archivos aceptas (incluimos html y xml para parecer navegador)
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        
+        # Idioma del "humano"
+        'Accept-Language': 'es-ES,es;q=0.8,en-US;q=0.5,en;q=0.3',
+        
+        # De dónde vienes (Tu código ya lo tenía y es excelente)
+        'Referer': 'https://finance.yahoo.com/',
+        
+        # Comportamiento humano
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1' # Le dice que prefieres sitios seguros
     }
+
+# ==========================================================
+# 🧠 ESPACIO PARA TUS MOTORES (Copia aquí tus mapeo_... de V1.98)
+# ==========================================================
 
 # 1️⃣ BINANCE: 3 EJES mapeo_binance_v2.0
 def mapeo_binance(busqueda):
@@ -117,6 +124,7 @@ def mapeo_bingx(busqueda):
     return encontrados
             
 # 3️⃣ YAHOO: DISCOVERY mapeo_yahoo_v2.0
+# 3️⃣ YAHOO: DISCOVERY mapeo_yahoo_v2.0
 def mapeo_yahoo(busqueda):
     encontrados = []
     # Lista de endpoints para redundancia
@@ -125,23 +133,29 @@ def mapeo_yahoo(busqueda):
         f"https://query1.finance.yahoo.com/v1/finance/search?q={busqueda}"
     ]
     
-    headers = get_headers() # Usamos tu función de headers existente
+    headers = get_headers()
+    
+    # --- 1. ESPERA INICIAL ---
+    # Un pequeño respiro antes de empezar para que no parezca ráfaga
+    time.sleep(random.uniform(1.0, 2.0))
     
     for url in urls:
         try:
             r = requests.get(url, headers=headers, timeout=5).json()
             quotes = r.get('quotes', [])
-            if not quotes: continue # Si esta URL no trae nada, probamos la siguiente
+            if not quotes: continue 
             
-            # Procesamos los resultados (Limitamos a 7 para dar variedad sin saturar)
+            # Procesamos los resultados (Limitamos a 7)
             for q in quotes[:7]:
                 sym = q['symbol']
                 try:
+                    # --- 2. ESPERA POR CADA TICKER (CRÍTICO) ---
+                    # Esto evita que Yahoo vea 7 peticiones en el mismo milisegundo
+                    time.sleep(random.uniform(0.5, 1.2)) 
+                    
                     t = yf.Ticker(sym)
-                    # Usamos fast_info para no bloquear la ejecución
                     p = t.fast_info['last_price']
                     
-                    # Formateamos la INFO para que el FRONTEND sepa qué es cada cosa
                     tipo = q.get('quoteType', 'N/A')
                     exchange = q.get('exchDisp', 'Global')
                     nombre = q.get('shortname', q.get('longname', 'Asset'))
@@ -149,15 +163,18 @@ def mapeo_yahoo(busqueda):
                     encontrados.append({
                         "Motor": "YAHOO",
                         "Ticker": sym,
-                        "Precio": f"{p:.2f}" if p else "N/A",
+                        "Precio": f"{p:.4f}" if p else "N/A", # Usamos 4 decimales como acordamos
                         "Info": f"[{tipo}] {nombre} ({exchange})"
                     })
-                except: continue
+                except: 
+                    continue
             
-            if encontrados: break # Si ya hallamos datos con la primera URL, no usamos la segunda
+            if encontrados: break 
             
         except Exception as e:
-            print(f"   ⚠️ Reintentando Yahoo por bloqueo en endpoint...")
+            # Si hay error, esperamos un poco más antes de intentar con la siguiente URL
+            time.sleep(2)
+            print(f"    ⚠️ Reintentando Yahoo por bloqueo en endpoint...")
             continue
             
     return encontrados
@@ -296,38 +313,196 @@ def mapeo_alpha(busqueda):
         
     return encontrados
 
-# 🧠 ENSAMBLADOR V1.94 (INTEGRAL)
 # ==========================================================
-def ejecutor_maestro_v1_97():
-    print(f"💎 MOTOR MAESTRO V1.96 - FULL DISCOVERY & REDUNDANCY")
-    print(f"🔍 BUSCANDO GAMA COMPLETA PARA: {TICKER_PARA_PRUEBA}")
-    print("-" * 130)
+# 💾 PERSISTENCIA EN sys_busqueda_resultados (CORREGIDO)
+# ==========================================================
+
+def guardar_en_resultados_db(conn, hallazgos, id_tarea, busqueda_original):
+    """
+    Inserta o ACTUALIZA los hallazgos. 
+    Maneja limpieza de decimales y evita duplicados en la misma ventana de tiempo.
+    """
+    try:
+        cur = conn.cursor()
+        
+        # Usamos ON DUPLICATE KEY UPDATE para que si el motor y el ticker ya existen
+        # para esa búsqueda, simplemente actualice el precio y la info.
+        query = """INSERT INTO sys_busqueda_resultados 
+                   (busqueda_id, nombre_comun, motor, ticker, precio, info) 
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON DUPLICATE KEY UPDATE 
+                   precio = VALUES(precio),
+                   info = VALUES(info),
+                   busqueda_id = VALUES(busqueda_id),
+                   fecha_hallazgo = CURRENT_TIMESTAMP"""
+        
+        for h in hallazgos:
+            # --- LIMPIEZA DE DECIMALES ---
+            try:
+                # Quitamos comas y nos aseguramos de que sea un float puro
+                p_str = str(h['Precio']).replace(',', '').strip()
+                precio_clean = float(p_str)
+            except (ValueError, TypeError):
+                precio_clean = 0.00000000 # Mantener precisión de 8 decimales
+
+            # Ejecución
+            cur.execute(query, (
+                id_tarea, 
+                busqueda_original.upper(), 
+                h['Motor'], 
+                h['Ticker'], 
+                precio_clean, 
+                h['Info']
+            ))
+            
+        conn.commit()
+        cur.close()
+        print(f"   ✅ DB: {len(hallazgos)} resultados procesados (Modo: Inteligente)")
+        
+    except Exception as e:
+        print(f"    ⚠️ Error al insertar en sys_busqueda_resultados: {e}")
+        
+# ==========================================================
+# 🧹 FUNCIÓN DE MANTENIMIENTO
+# ==========================================================
+def limpiar_resultados_antiguos(conn):
+    """Borra registros de la tabla resultados que tengan más de 15 minutos"""
+    try:
+        cur = conn.cursor()
+        # Nota: La columna fecha_hallazgo debe existir en tu tabla
+        query = "DELETE FROM sys_busqueda_resultados WHERE fecha_hallazgo < NOW() - INTERVAL 15 MINUTE"
+        cur.execute(query)
+        registros_borrados = cur.rowcount
+        conn.commit()
+        if registros_borrados > 0:
+            print(f"🧹 MANTENIMIENTO: Se eliminaron {registros_borrados} registros obsoletos (>15 min).")
+        cur.close()
+    except Exception as e:
+        print(f"⚠️ Error en limpieza: {e}")
+
+# ==========================================================
+# 🚀 ORQUESTADOR V1.99 - EL CEREBRO CON MEMORIA Y AUTOLIMPIEZA
+# ==========================================================
+
+def bucle_operativo():
+    print(f"💎 MOTOR MAESTRO V1.99 - ONLINE (Memoria Inteligente + Sync Web)")
+    print(f"📡 Escaneando tareas en sys_simbolos_buscados...")
     
-    consolidado = []
-    motores = [
-        ("Binance", mapeo_binance), 
-        ("BingX", mapeo_bingx), 
-        ("Yahoo", mapeo_yahoo), 
-        ("Finnhub", mapeo_finnhub), 
-        ("Alpha", mapeo_alpha)
-    ]
+    conn = None 
 
-    for nombre, func in motores:
-        print(f"📡 Interrogando {nombre}...")
+    while True:
         try:
-            res = func(TICKER_PARA_PRUEBA)
-            if res: consolidado.extend(res)
-        except Exception as e: print(f"   ⚠️ Error en {nombre}: {e}")
-        time.sleep(1)
+            # 1. GESTIÓN DE CONEXIÓN ÚNICA
+            if conn is None or not conn.is_connected():
+                if conn: 
+                    try: conn.close()
+                    except: pass
+                conn = mysql.connector.connect(**DB_CONFIG)
 
-    # MOSTRAR RESULTADOS
-    if consolidado:
-        df = pd.DataFrame(consolidado)
-        print("\n" + "═"*130)
-        print(df[["Motor", "Ticker", "Precio", "Info"]].to_string(index=False, justify='left'))
-        print("═"*130)
-    else:
-        print(f"❌ Sin resultados para '{TICKER_PARA_PRUEBA}'")
+            cur = conn.cursor(dictionary=True)
+            
+            # 2. BUSCAR TAREA PENDIENTE
+            cur.execute("SELECT id, ticker FROM sys_simbolos_buscados WHERE status = 'pendiente' LIMIT 1")
+            tarea = cur.fetchone()
 
+            if tarea:
+                id_tarea = tarea['id']
+                tk_busqueda = tarea['ticker'].upper().strip()
+                
+                print(f"\n🎯 TAREA RECIBIDA: {tk_busqueda} (ID: {id_tarea})")
+                
+                # --- LÓGICA DE MEMORIA V3.16 ---
+                query_memoria = "SELECT motor, ticker, precio, info FROM sys_busqueda_resultados WHERE nombre_comun = %s LIMIT 20"
+                cur.execute(query_memoria, (tk_busqueda,))
+                existentes = cur.fetchall()
+
+                if existentes:
+                    print(f"🧠 MEMORIA: {tk_busqueda} encontrada. Sincronizando con Web (ID: {id_tarea})...")
+                    
+                    for fila in existentes:
+                        sql_insert = """INSERT INTO sys_busqueda_resultados 
+                                       (busqueda_id, nombre_comun, motor, ticker, precio, info) 
+                                       VALUES (%s, %s, %s, %s, %s, %s)"""
+                        cur.execute(sql_insert, (
+                            id_tarea, tk_busqueda, fila['motor'], fila['ticker'], fila['precio'], fila['info']
+                        ))
+                    
+                    print("\n" + "═"*110)
+                    df_p = pd.DataFrame(existentes)
+                    df_p.columns = [c.upper() for c in df_p.columns]
+                    df_p['PRECIO'] = df_p['PRECIO'].apply(lambda x: f"{float(x):.4f}")
+                    print(df_p.to_string(index=False))
+                    print("═"*110)
+                    
+                    cur.execute("UPDATE sys_simbolos_buscados SET status = 'encontrado' WHERE id = %s", (id_tarea,))
+                    conn.commit() 
+                    print(f"✅ Web Actualizada vía Memoria.")
+                
+                else:
+                    # --- BÚSQUEDA FRESKA ---
+                    print(f"🔍 No hay registros para {tk_busqueda}. Interrogando mercados...")
+                    print("-" * 110)
+                    
+                    cur.execute("UPDATE sys_simbolos_buscados SET status = 'buscando' WHERE id = %s", (id_tarea,))
+                    conn.commit()
+
+                    consolidado = []
+                    motores = [
+                        ("Binance", mapeo_binance), ("BingX", mapeo_bingx), 
+                        ("Yahoo", mapeo_yahoo), ("Finnhub", mapeo_finnhub), ("Alpha", mapeo_alpha)
+                    ]
+
+                    for nombre, funcion in motores:
+                        print(f"📡 Interrogando {nombre: <12}", end=" ", flush=True)
+                        try:
+                            res = funcion(tk_busqueda)
+                            if res and len(res) > 0:
+                                consolidado.extend(res)
+                                print("✅")
+                            else: print("❌")
+                        except: print("⚠️")
+
+                    if consolidado:
+                        print("\n" + "═"*110)
+                        df = pd.DataFrame(consolidado)
+                        df['Precio'] = df['Precio'].apply(lambda x: f"{float(str(x).replace(',', '')):.4f}")
+                        print(df[["Motor", "Ticker", "Precio", "Info"]].to_string(index=False))
+                        print("═"*110)
+                        
+                        guardar_en_resultados_db(conn, consolidado, id_tarea, tk_busqueda)
+                        cur.execute("UPDATE sys_simbolos_buscados SET status = 'encontrado' WHERE id = %s", (id_tarea,))
+                        print(f"✅ Sincronización exitosa (Nuevos datos).")
+                    else:
+                        cur.execute("UPDATE sys_simbolos_buscados SET status = 'error' WHERE id = %s", (id_tarea,))
+                
+                # --- FIN DE TAREA: LIMPIEZA POST-OPERATIVA ---
+                conn.commit()
+                limpiar_resultados_antiguos(conn) # <--- Aquí limpia después de cada ticker
+                
+                print(f"⏳ Esperando 10 segundos...")
+                time.sleep(10)
+
+            else:
+                # --- MODO REPOSO: LIMPIEZA PERIÓDICA ---
+                limpiar_resultados_antiguos(conn) # <--- Aquí limpia mientras espera tareas
+                print(".", end="", flush=True)
+                time.sleep(60) 
+
+            cur.close()
+
+        except mysql.connector.Error as err:
+            if err.errno == 1226:
+                print("\n⚠️ Límite Hostinger. Pausa 5 min...")
+                time.sleep(300)
+            else:
+                conn = None
+                time.sleep(10)
+        except Exception as e:
+            print(f"\n⚠️ Error crítico: {e}")
+            time.sleep(10)
+
+# ==========================================================
+# 🏁 LANZADOR
+# ==========================================================
 if __name__ == "__main__":
-    ejecutor_maestro_v1_97()
+    bucle_operativo()
