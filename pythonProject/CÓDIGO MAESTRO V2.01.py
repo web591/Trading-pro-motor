@@ -50,7 +50,7 @@ def mapeo_binance(busqueda):
             for i in data:
                 sym = i.get('symbol','')
                 if tk in sym:
-                    if mkt == "BIN_SPOT" and not (sym.endswith("USDT") or sym.endswith("USDC")): continue
+                    if mkt == "binance_spot" and not (sym.endswith("USDT") or sym.endswith("USDC")): continue
                     
                     # Obtenemos el precio
                     precio_crudo = i.get('price', i.get('lastPrice', 0))
