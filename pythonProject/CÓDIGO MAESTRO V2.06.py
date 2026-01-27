@@ -354,12 +354,13 @@ from datetime import datetime
 # 💾 PERSISTENCIA EN sys_busqueda_resultados (V2.05)
 # ==========================================================
 def guardar_en_resultados_db(conn, hallazgos, id_tarea, busqueda_original):
-    """Guarda los hallazgos frescos de las APIs en la base de datos"""
     try:
         cur = conn.cursor()
         
-        # Limpiamos resultados previos para este ID específico por seguridad
-        cur.execute("DELETE FROM sys_busqueda_resultados WHERE busqueda_id = %s", (id_tarea,))
+        # --- SOLUCIÓN A DUPLICADOS DISCUTIDA AYER ---
+        # Borramos cualquier resultado previo para que si el usuario busca de nuevo,
+        # la tabla esté limpia para este ID de tarea.
+        # cur.execute("DELETE FROM sys_busqueda_resultados WHERE busqueda_id = %s", (id_tarea,))
         
         query = """INSERT INTO sys_busqueda_resultados 
                    (busqueda_id, nombre_comun, motor, ticker, precio, info) 
@@ -383,10 +384,11 @@ def guardar_en_resultados_db(conn, hallazgos, id_tarea, busqueda_original):
             
         conn.commit()
         cur.close()
+        # Esto es para que tú lo veas en la consola
         print(f"    ✅ {len(hallazgos)} resultados inyectados para ID: {id_tarea}")
         
     except Exception as e:
-        print(f"    ⚠️ Error en DB al guardar hallazgos: {e}")
+        print(f"    ⚠️ Error en DB: {e}")
 
 # ==========================================================
 # 🧹 FUNCIÓN DE MANTENIMIENTO
