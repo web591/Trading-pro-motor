@@ -8,3 +8,4 @@ pip install alpha_vantage
 pip install yfinance
 pip install yfinance --upgrade
 pip install pycryptodome mysql-connector-python python-binance
+pip install pandas
