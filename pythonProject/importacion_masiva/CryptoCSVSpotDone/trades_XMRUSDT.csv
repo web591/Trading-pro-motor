@@ -1,0 +1,2 @@
+Unnamed: 0,symbol,id,orderId,orderListId,price,qty,quoteQty,commission,commissionAsset,time,isBuyer,isMaker,isBestMatch
+,XMRUSDT,72034582.0,1444720686.0,-1.0,163.0,0.082,13.366,3.275e-05,BNB,29-01-2024 05:00:13,False,True,True

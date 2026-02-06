@@ -1,0 +1,2 @@
+Unnamed: 0,symbol,id,orderId,orderListId,price,qty,quoteQty,commission,commissionAsset,time,isBuyer,isMaker,isBestMatch
+,MANAUSDT,140311702.0,1085794006.0,-1.0,3.25,4.0,13.0,2.36e-05,BNB,07-02-2022 01:08:16,True,True,True
