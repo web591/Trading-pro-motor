@@ -2,3 +2,5 @@ config.py
 .venv/
 .idea/
 __pycache__/
+mini_script10_binance_debug.py
+mini_script10_bingx_debug.py
