@@ -397,7 +397,7 @@ def limpiar_resultados_antiguos(conn):
     """Borra registros de la tabla resultados que tengan más de 15 minutos"""
     try:
         cur = conn.cursor()
-        query = "DELETE FROM sys_busqueda_resultados WHERE fecha_hallazgo < NOW() - INTERVAL 15 MINUTE"
+        query = "DELETE FROM sys_busqueda_resultados WHERE fecha_hallazgo < NOW() - INTERVAL 24 HOUR"
         cur.execute(query)
         registros_borrados = cur.rowcount
         conn.commit()
