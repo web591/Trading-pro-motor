@@ -52,17 +52,29 @@ def actualizar_precios():
             
             try:
                 # ---------------------------------------------------------
-                # MOTOR A: BINANCE (Spot y Futuros)
+                # MOTOR A: BINANCE (Spot, USDT-Future y COIN-Future)
                 # ---------------------------------------------------------
                 if 'binance' in fuente:
-                    base_url = "https://api.binance.com/api/v3" if "spot" in fuente else "https://fapi.binance.com/fapi/v1"
-                    # Usamos requests directos (Binance es amigable, no requiere headers complejos usualmente)
-                    res = requests.get(f"{base_url}/ticker/24hr?symbol={ticker}", timeout=5).json()
+                    if "spot" in fuente:
+                        base_url = "https://api.binance.com/api/v3"
+                    elif "coin_future" in fuente or "_perp" in ticker.lower():
+                        # Los pares _PERP viven en la DAPI (COIN-M)
+                        base_url = "https://dapi.binance.com/dapi/v1"
+                    else:
+                        # Los pares USDT viven en la FAPI (USDT-M)
+                        base_url = "https://fapi.binance.com/fapi/v1"
+                    
+                    # Para DAPI (COIN-M), el endpoint de 24h es ligeramente distinto
+                    endpoint = f"{base_url}/ticker/24hr?symbol={ticker}"
+                    res = requests.get(endpoint, timeout=5).json()
+                    
+                    # Las APIs de Futuros de Binance a veces devuelven una LISTA de un solo objeto
+                    if isinstance(res, list) and len(res) > 0:
+                        res = res[0]
                     
                     if 'lastPrice' in res:
                         precio = float(res['lastPrice'])
-                        cambio = float(res['priceChangePercent'])
-                        # Spot usa 'volume', Futuros a veces usa 'volume' también
+                        cambio = float(res.get('priceChangePercent', 0))
                         volumen = float(res.get('volume', 0))
 
                 # ---------------------------------------------------------
