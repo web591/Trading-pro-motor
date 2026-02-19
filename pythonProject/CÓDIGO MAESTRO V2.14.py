@@ -73,7 +73,7 @@ def _bingx_forex(tk, contratos, precios_dict):
         encontrados.append({
             "Motor": "bingx_forex",
             "Ticker": sym,
-            "Nombre": nombre,
+            "Nombre": displayName,
             "Precio": precio,
             "Info": f"FOREX CFD | {displayName}"
         })
@@ -94,7 +94,7 @@ def _bingx_commodity(tk, contratos, precios_dict):
         encontrados.append({
             "Motor": "bingx_commodity",
             "Ticker": sym,
-            "Nombre": nombre,
+            "Nombre": displayName,
             "Precio": precio,
             "Info": f"COMMODITY CFD | {displayName}"
         })
@@ -125,7 +125,7 @@ def _bingx_stock(tk, contratos, precios_dict):
         encontrados.append({
             "Motor": "bingx_stock",
             "Ticker": sym,
-            "Nombre": nombre,
+            "Nombre": displayName,
             "Precio": precio,
             "Info": f"STOCK CFD | {displayName}"
         })
@@ -156,7 +156,7 @@ def _bingx_index(tk, contratos, precios_dict):
         encontrados.append({
             "Motor": "bingx_index",
             "Ticker": sym,
-            "Nombre": nombre,
+            "Nombre": displayName,
             "Precio": precio,
             "Info": f"INDEX CFD | {displayName}"
         })
@@ -174,7 +174,7 @@ def _bingx_crypto(tk, precios):
         encontrados.append({
             "Motor": "bingx_crypto",
             "Ticker": sym,
-            "Nombre": nombre,
+            "Nombre": displayName,
             "Precio": precio,
             "Info": f"BingX Crypto: {sym}"
         })
@@ -361,7 +361,7 @@ def guardar_en_resultados_db(conn, hallazgos, id_tarea, busqueda_original):
 # 🚀 ORQUESTADOR
 # ==========================================================
 def bucle_operativo():
-    print(f"💎 MOTOR MAESTRO V2.11 - MULTIUSUARIO ONLINE (MEMORY ENABLED)")
+    print(f"💎 MOTOR MAESTRO V2.14 - MULTIUSUARIO ONLINE (MEMORY ENABLED)")
     conn = None 
 
     while True:
