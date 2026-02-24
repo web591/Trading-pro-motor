@@ -119,7 +119,7 @@ def _bingx_stock(tk, contratos, precios_dict):
         # Intentamos obtener lastPrice del endpoint /ticker
         precio = precios_dict.get(sym, {}).get("lastPrice")
         if not precio or float(precio) <= 0: 
-            precio = "SIN PRECIO"
+            precio = 0
 
         nombre = underlying.replace("USDT","").replace("USD","")
         encontrados.append({
@@ -150,7 +150,7 @@ def _bingx_index(tk, contratos, precios_dict):
         # Intentamos obtener lastPrice del endpoint /ticker
         precio = precios_dict.get(sym, {}).get("lastPrice")
         if not precio or float(precio) <= 0: 
-            precio = "SIN PRECIO"
+            precio = 0
 
         nombre = underlying.replace("USDT","").replace("USD","")
         encontrados.append({
@@ -404,7 +404,7 @@ def limpiar_resultados_antiguos(conn):
 # 🚀 ORQUESTADOR
 # ==========================================================
 def bucle_operativo():
-    print(f"💎 MOTOR MAESTRO V2.15 - MULTIUSUARIO ONLINE (MEMORY ENABLED)")
+    print(f"💎 MOTOR MAESTRO V2.16 - MULTIUSUARIO ONLINE (MEMORY ENABLED)")
     conn = None 
 
     while True:
@@ -430,6 +430,38 @@ def bucle_operativo():
                 
                 print(f"\n🎯 PROCESANDO: {tk_busqueda} (ID: {id_tarea})")
                 
+
+                # ==========================================================
+                # 🧠 PASO 0 — CACHE DE DESCUBRIMIENTO
+                # ==========================================================
+
+                cur_cache = conn.cursor()
+
+                cur_cache.execute("""
+                    SELECT 1
+                    FROM sys_busqueda_resultados
+                    WHERE underlying = %s
+                    AND fecha_hallazgo >= NOW() - INTERVAL 24 HOUR
+                    LIMIT 1
+                """, (tk_busqueda,))
+
+                cache_hit = cur_cache.fetchone()
+                cur_cache.close()
+
+                if cache_hit:
+                    print(f"🧠 CACHE HIT: {tk_busqueda} ya fue interrogado recientemente. Saltando APIs...")
+
+                    cur_upd2 = conn.cursor()
+                    cur_upd2.execute("""
+                        UPDATE sys_simbolos_buscados
+                        SET status = 'validar'
+                        WHERE id = %s
+                    """, (id_tarea,))
+                    conn.commit()
+                    cur_upd2.close()
+
+                    continue
+
                 # --- PASO A: REVISAR MEMORIA 🧠 ---
                 # 🔥 OBTENER UNDERLYING DESDE TRADUCTOR
  
