@@ -8,12 +8,65 @@ from config import DB_CONFIG
 def conectar_db():
     return mysql.connector.connect(**DB_CONFIG)
 
-def normalizar_fecha(fecha_str):
-    for fmt in ["%d-%m-%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M"]:
-        try:
-            return datetime.strptime(str(fecha_str).strip(), fmt).strftime("%Y-%m-%d %H:%M:%S")
-        except: continue
-    return None
+def normalizar_fecha_motor(fecha_raw):
+
+    if not fecha_raw:
+        return None
+
+    try:
+        if isinstance(fecha_raw,(int,float)):
+            if fecha_raw > 9999999999:
+                fecha = datetime.utcfromtimestamp(int(fecha_raw)/1000)
+            else:
+                fecha = datetime.utcfromtimestamp(int(fecha_raw))
+
+        elif isinstance(fecha_raw,str):
+            for fmt in [
+                "%d-%m-%Y %H:%M:%S",
+                "%Y-%m-%d %H:%M:%S",
+                "%d/%m/%Y %H:%M",
+                "%Y-%m-%dT%H:%M:%S"
+            ]:
+                try:
+                    fecha = datetime.strptime(fecha_raw.strip(),fmt)
+                    break
+                except: continue
+            else:
+                return None
+
+        elif isinstance(fecha_raw,datetime):
+            fecha = fecha_raw
+        else:
+            return None
+
+        return fecha.replace(microsecond=0)
+
+    except:
+        return None
+
+def normalizar_categoria_motor(cat):
+    """
+    Mantenemos el nombre original pero con lógica Ledger v4.4.2
+    """
+    op = str(cat).upper().strip()
+    
+    # Lógica unificada
+    if any(x in op for x in ['LAUNCHPOOL', 'DISTRIBUTION', 'AIRDROP', 'DIVIDEND']): return "AIRDROP"
+    if any(x in op for x in ['EARN', 'SAVINGS', 'STAKING', 'INTEREST']): return "INTEREST"
+    if any(x in op for x in ['MINING', 'POOL REWARDS']): return "MINING"
+    if any(x in op for x in ['VOUCHER', 'BONUS']): return "BONUS"
+    if any(x in op for x in ['REBATE', 'COMMISSION REBATE']): return "REBATE"
+    if 'CASHBACK' in op: return "CASHBACK"
+    if any(x in op for x in ['FEE', 'TRANSACTION FEE']): return "FEE"
+    if 'FUNDING' in op: return "FUNDING"
+    if any(x in op for x in ['DEPOSIT', 'INITIAL BALANCE']): return "DEPOSIT"
+    if any(x in op for x in ['WITHDRAW', 'SEND']): return "WITHDRAW"
+    if any(x in op for x in ['TRANSFER', 'P2P', 'INTERNAL']): return "TRANSFER_INTERNAL"
+    if any(x in op for x in ['TRADE', 'BUY', 'SELL', 'TRANSACTION', 'PNL']): return "TRADE"
+    
+    return "UNKNOWN"
+
+
 
 def importar_trades_sincronizado(file_path, user_id):
     db = conectar_db()
@@ -32,50 +85,50 @@ def importar_trades_sincronizado(file_path, user_id):
     for _, row in df.iterrows():
         try:
             symbol = row['symbol']
-            # ID que se usará como enlace entre ambas tablas
-            id_ext_comun = f"BIN-{row['id']}" 
-            fecha = normalizar_fecha(row['time'])
             
+            # --- DETECCIÓN INTELIGENTE DE MERCADO ---
             if 'isBuyer' in row:
-                side = "BUY" if row['isBuyer'].upper() == 'TRUE' else "SELL"
-                tipo_cuenta = "SPOT"
-            else:
+                tipo_mercado = "SPOT"
+                side = "BUY" if str(row['isBuyer']).upper() == 'TRUE' else "SELL"
+            elif 'Market' in row:
+                if row['Market'] == 'FUM': tipo_mercado = "USDT-M"
+                elif row['Market'] == 'FCM': tipo_mercado = "COIN-M"
+                else: tipo_mercado = "FUTURES"
                 side = row['side'].upper()
-                tipo_cuenta = "FUTURES"
+            else:
+                tipo_mercado = "UNKNOWN"
+                side = row.get('side', 'BUY').upper()
 
-            # 1. INSERTAR EN transacciones_globales (Nombres confirmados en tu SQL)
-            qty = float(row['qty'])
-            monto_neto = qty if side == "BUY" else -qty
+            # ID Único con trazabilidad de mercado
+            id_ext_comun = f"CSV-BN-{tipo_mercado}-{symbol}-{row['id']}" 
+            fecha = normalizar_fecha_motor(row['time'])
 
+            # Inserción Global (Dashboard)
             sql_global = """INSERT IGNORE INTO transacciones_globales 
                             (id_externo, user_id, exchange, cuenta_tipo, categoria, asset, monto_neto, comision, fecha_utc) 
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             
             cursor.execute(sql_global, (
-                id_ext_comun, user_id, "Binance", tipo_cuenta, "TRADE", symbol, 
-                monto_neto, float(row['commission']), fecha
+                id_ext_comun, user_id, "Binance", tipo_mercado, "TRADE", symbol, 
+                float(row['qty']) if side in ["BUY", "LONG"] else -float(row['qty']), 
+                float(row.get('commission', 0)), fecha
             ))
 
-            # 2. INSERTAR EN detalle_trades (Ajustado a tus nombres: id_externo_ref, lado, precio_ejecucion, etc.)
+            # Inserción Detalle (Filtros PHP)
             sql_detalle = """INSERT IGNORE INTO detalle_trades 
-                 (id_externo_ref, fecha_utc, symbol, lado, precio_ejecucion, 
-                  cantidad_ejecutada, pnl_realizado, is_maker) 
-                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"""
-
-            pnl = float(row.get('realizedPnl', 0))
-            is_maker = 1 if str(row.get('maker', 'False')).upper() == 'TRUE' else 0
+                 (id_externo_ref, user_id, exchange, tipo_mercado, symbol, lado, precio_ejecucion, 
+                  cantidad_ejecutada, pnl_realizado, fecha_utc) 
+                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
 
             cursor.execute(sql_detalle, (
-                id_ext_comun, fecha, symbol, side, float(row['price']), 
-                qty, pnl, is_maker
+                id_ext_comun, user_id, "Binance", tipo_mercado, symbol, side, 
+                float(row['price']), float(row['qty']), float(row.get('realizedPnl', 0)), fecha
             ))
-            
+             
             if cursor.rowcount > 0:
                 nuevos += 1
 
         except Exception as e:
-            # Descomenta la siguiente línea si quieres ver el error detallado por fila
-            # print(f"Error en fila: {e}")
             continue
 
     db.commit()
