@@ -400,6 +400,46 @@ def limpiar_resultados_antiguos(conn):
     except Exception as e:
         print(f"⚠️ Error en limpieza automática: {e}")
 
+
+# ==========================================================
+# Version 2.16.A17
+# MEMORY HIT -> SOLO VALIDAR (NO INSERTAR)
+# ==========================================================
+def validar_tarea_existente(conn, id_tarea, underlying_consulta):
+
+    cur = conn.cursor(dictionary=True)
+
+    try:
+        # Buscar si ya existe algo en traductor para este underlying
+        cur.execute("""
+            SELECT id 
+            FROM sys_traductor_simbolos
+            WHERE underlying = %s
+            LIMIT 1
+        """, (underlying_consulta,))
+        
+        res = cur.fetchone()
+        trad_id = res['id'] if res else None
+
+        # SOLO VALIDAMOS TAREA (NO INSERTAMOS RESULTADOS)
+        cur.execute("""
+            UPDATE sys_simbolos_buscados
+            SET traductor_id = %s,
+                status = 'validar'
+            WHERE id = %s
+        """, (trad_id, id_tarea))
+
+        conn.commit()
+
+        print(f"    🧠 CACHE HIT -> Tarea {id_tarea} validada sin duplicar catálogo")
+
+    except Exception as e:
+        print(f"⚠️ Error en validar_tarea_existente: {e}")
+        conn.rollback()
+
+    finally:
+        cur.close()
+
 # ==========================================================
 # 🚀 ORQUESTADOR
 # ==========================================================
@@ -421,53 +461,15 @@ def bucle_operativo():
             if tarea:
                 id_tarea = tarea['id']
                 tk_busqueda = tarea['ticker'].upper().strip()
-                
-                # Bloqueo inmediato
+
                 cur_upd = conn.cursor()
                 cur_upd.execute("UPDATE sys_simbolos_buscados SET status = 'procesando' WHERE id = %s", (id_tarea,))
                 conn.commit()
                 cur_upd.close()
-                
+
                 print(f"\n🎯 PROCESANDO: {tk_busqueda} (ID: {id_tarea})")
-                
 
-                # ==========================================================
-                # 🧠 PASO 0 — CACHE DE DESCUBRIMIENTO
-                # ==========================================================
-
-                cur_cache = conn.cursor()
-
-                cur_cache.execute("""
-                    SELECT 1
-                    FROM sys_busqueda_resultados
-                    WHERE underlying = %s
-                    AND fecha_hallazgo >= NOW() - INTERVAL 24 HOUR
-                    LIMIT 1
-                """, (tk_busqueda,))
-
-                cache_hit = cur_cache.fetchone()
-                cur_cache.close()
-
-                if cache_hit:
-                    print(f"🧠 CACHE HIT: {tk_busqueda} ya fue interrogado recientemente. Saltando APIs...")
-
-                    cur_upd2 = conn.cursor()
-                    cur_upd2.execute("""
-                        UPDATE sys_simbolos_buscados
-                        SET status = 'validar'
-                        WHERE id = %s
-                    """, (id_tarea,))
-                    conn.commit()
-                    cur_upd2.close()
-
-                    continue
-
-                # --- PASO A: REVISAR MEMORIA 🧠 ---
-                # 🔥 OBTENER UNDERLYING DESDE TRADUCTOR
- 
                 cur_u = conn.cursor(dictionary=True)
-
-                # 1️⃣ Intentar resolver como ticker_motor primero
                 cur_u.execute("""
                     SELECT underlying
                     FROM sys_traductor_simbolos
@@ -479,7 +481,6 @@ def bucle_operativo():
                 if row and row.get("underlying"):
                     underlying_consulta = row["underlying"].upper()
                 else:
-                    # 2️⃣ Intentar resolver como underlying directo
                     cur_u.execute("""
                         SELECT underlying
                         FROM sys_traductor_simbolos
@@ -487,35 +488,49 @@ def bucle_operativo():
                         LIMIT 1
                     """, (tk_busqueda,))
                     row2 = cur_u.fetchone()
-
-                    if row2 and row2.get("underlying"):
-                        underlying_consulta = row2["underlying"].upper()
-                    else:
-                        # 3️⃣ Fallback limpio
-                        underlying_consulta = tk_busqueda.upper()
+                    underlying_consulta = row2["underlying"].upper() if row2 and row2.get("underlying") else tk_busqueda.upper()
 
                 cur_u.close()
 
-                cur_mem = conn.cursor(dictionary=True)
-                query_memoria = """SELECT motor, ticker, precio, info, nombre_comun
-                   FROM sys_busqueda_resultados 
-                   WHERE underlying = %s 
-                   GROUP BY motor, ticker LIMIT 15"""
-                cur_mem.execute(query_memoria, (underlying_consulta,))
-                existentes = cur_mem.fetchall()
-                cur_mem.close()
+                cur_cache = conn.cursor()
+                cur_cache.execute("""
+                    SELECT 1
+                    FROM sys_busqueda_resultados
+                    WHERE underlying = %s
+                    AND fecha_hallazgo >= NOW() - INTERVAL 24 HOUR
+                    LIMIT 1
+                """, (underlying_consulta,))
+                cache_hit = cur_cache.fetchone()
+                cur_cache.close()
 
-                if existentes:
-                    print(f"🧠 MEMORIA: {tk_busqueda} ya está en caché. Sincronizando...")
-                    # Convertimos memoria al formato que espera el guardado
-                    hallazgos_mem = [{"Motor": f['motor'], "Ticker": f['ticker'], "Nombre": f['nombre_comun'], "Precio": f['precio'], "Info": f['info']} for f in existentes]
+                if cache_hit:
+                    print(f"🧠 MEMORIA GLOBAL: {underlying_consulta} ya descubierto. Reutilizando catálogo...")
+
+                    cur_mem = conn.cursor(dictionary=True)
+                    cur_mem.execute("""
+                        SELECT motor, ticker, precio, info, nombre_comun
+                        FROM sys_busqueda_resultados
+                        WHERE underlying = %s
+                        AND fecha_hallazgo >= NOW() - INTERVAL 24 HOUR
+                        LIMIT 20
+                    """, (underlying_consulta,))
+                    existentes = cur_mem.fetchall()
+                    cur_mem.close()
+
+                    hallazgos_mem = [{
+                        "Motor": f['motor'],
+                        "Ticker": f['ticker'],
+                        "Nombre": f['nombre_comun'],
+                        "Precio": f['precio'],
+                        "Info": f['info']
+                    } for f in existentes]
+
                     guardar_en_resultados_db(conn, hallazgos_mem, id_tarea, tk_busqueda, underlying_consulta)
+
                 else:
-                    # --- PASO B: BÚSQUEDA FRESCA 📡 ---
                     print(f"🔍 Interrogando mercados para {tk_busqueda}...")
                     consolidado = []
-                    
-                    # Ejecutamos motores definidos arriba
+
                     motores = [
                         ("Binance", mapeo_binance), 
                         ("BingX", mapeo_bingx), 
@@ -527,15 +542,16 @@ def bucle_operativo():
                     for nombre, funcion in motores:
                         try:
                             res = funcion(tk_busqueda)
-                            if res: consolidado.extend(res)
-                        except: continue
+                            if res:
+                                consolidado.extend(res)
+                        except:
+                            continue
 
                     guardar_en_resultados_db(conn, consolidado, id_tarea, tk_busqueda, underlying_consulta)
-                
-                time.sleep(1)
+
             else:
                 print(".", end="", flush=True)
-                time.sleep(10) 
+                time.sleep(10)            
 
         except Exception as e:
             print(f"⚠️ Error Crítico en Bucle: {e}")
