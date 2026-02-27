@@ -354,6 +354,9 @@ def bucle_operativo():
             if conn is None or not conn.is_connected():
                 conn = mysql.connector.connect(**DB_CONFIG)
 
+            if int(time.time()) % 300 == 0:
+                limpiar_resultados_antiguos(conn)   
+
             cur = conn.cursor(dictionary=True, buffered=True)
             cur.execute("SELECT id, ticker FROM sys_simbolos_buscados WHERE status IN ('pendiente','encontrado') LIMIT 1")
             tarea = cur.fetchone()
@@ -390,27 +393,22 @@ def bucle_operativo():
                         trad_id = None
                 cur_u.close()
 
-                # ==========================================================
-                # 🔹 DETECTAR TIPO INVERSION
-                # ==========================================================
-                cur_tipo = conn.cursor(dictionary=True)
-                cur_tipo.execute("SELECT tipo_investment FROM sys_busqueda_resultados WHERE underlying = %s AND fecha_hallazgo >= NOW() - INTERVAL 24 HOUR LIMIT 1", (underlying_consulta,))
-                row_tipo = cur_tipo.fetchone()
-                cur_tipo.close()
-                tipo_detectado = row_tipo['tipo_investment'] if row_tipo else "UNKNOWN"
 
                 # ==========================================================
                 # 🔹 MEMORIA GLOBAL
                 # ==========================================================
                 cur_cache = conn.cursor()
-                cur_cache.execute("SELECT 1 FROM sys_busqueda_resultados WHERE underlying = %s AND tipo_investment = %s AND fecha_hallazgo >= NOW() - INTERVAL 24 HOUR LIMIT 1", (underlying_consulta, tipo_detectado))
+                cur_cache.execute(
+                    "SELECT 1 FROM sys_busqueda_resultados WHERE underlying = %s LIMIT 1",
+                    (underlying_consulta,)
+                )
                 cache_hit = cur_cache.fetchone()
                 cur_cache.close()
 
                 if cache_hit:
                     print(f"🧠 MEMORIA GLOBAL: {underlying_consulta} ya descubierto. Reutilizando catálogo...")
                     cur_mem = conn.cursor(dictionary=True)
-                    cur_mem.execute("SELECT motor, ticker, precio, info, nombre_comun, tipo_investment FROM sys_busqueda_resultados WHERE underlying = %s AND tipo_investment = %s AND fecha_hallazgo >= NOW() - INTERVAL 24 HOUR LIMIT 20", (underlying_consulta, tipo_detectado))
+                    cur_mem.execute("SELECT motor, ticker, precio, info, nombre_comun, tipo_investment FROM sys_busqueda_resultados WHERE underlying = %s AND fecha_hallazgo >= NOW() - INTERVAL 24 HOUR LIMIT 20", (underlying_consulta,))
                     existentes = cur_mem.fetchall()
                     cur_mem.close()
                     hallazgos_mem = [{"Motor": f['motor'], "Ticker": f['ticker'], "Nombre": f['nombre_comun'], "Precio": f['precio'], "Info": f['info']} for f in existentes]
