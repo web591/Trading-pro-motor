@@ -411,7 +411,7 @@ def bucle_operativo():
                     cur_mem.execute("SELECT motor, ticker, precio, info, nombre_comun, tipo_investment FROM sys_busqueda_resultados WHERE underlying = %s AND fecha_hallazgo >= NOW() - INTERVAL 24 HOUR LIMIT 20", (underlying_consulta,))
                     existentes = cur_mem.fetchall()
                     cur_mem.close()
-                    hallazgos_mem = [{"Motor": f['motor'], "Ticker": f['ticker'], "Nombre": f['nombre_comun'], "Precio": f['precio'], "Info": f['info']} for f in existentes]
+                    hallazgos_mem = [{"Motor": f['motor'], "Ticker": f['ticker'], "Nombre": f['nombre_comun'], "Precio": f['precio'], "Info": f['info'], "Tipo": f['tipo_investment']}   for f in existentes]
                     # 🔹 Guardado usando memoria + actualización traductor_id aunque no haya hallazgos
                     guardar_en_resultados_db(conn, hallazgos_mem, id_tarea, tk_busqueda, underlying_consulta)
                     # Si no hay hallazgos_mem, aun así se actualiza traductor_id
