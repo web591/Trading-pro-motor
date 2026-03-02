@@ -89,7 +89,8 @@ def _bingx_commodity(tk, contratos, precios_dict):
             "Ticker": sym,
             "Nombre": displayName,
             "Precio": precio,
-            "Info": f"COMMODITY CFD | {displayName}"
+            "Info": f"COMMODITY CFD | {displayName}",
+            "Tipo": "COMMODITY"
         })
     return encontrados
 
