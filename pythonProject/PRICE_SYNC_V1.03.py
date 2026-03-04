@@ -7,7 +7,7 @@ from datetime import datetime
 from config import DB_CONFIG, FINNHUB_KEY
 
 # ==========================================================
-# 💎 PRICE SYNC V1.02 - MONITOR DE PRECIOS REAL
+# 💎 PRICE SYNC V1.03 - MONITOR DE PRECIOS REAL
 # ==========================================================
 # 1. Headers tipo navegador (Mozilla) para evitar bloqueos
 # 2. Soporte para Binance, BingX, Yahoo, Finnhub
