@@ -1,0 +1,256 @@
+import mysql.connector
+from binance.client import Client
+import time, os, base64, hmac, hashlib, requests, json
+from hashlib import sha256
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
+import config
+
+MASTER_KEY = os.getenv('APP_ENCRYPTION_KEY') or getattr(config, 'ENCRYPTION_KEY', None)
+
+# ==========================================================
+# 🔐 SEGURIDAD Y HELPERS
+# ==========================================================
+def descifrar_dato(t, m):
+    try:
+        if not t: return None
+        raw = base64.b64decode(t.strip())
+        partes = raw.rsplit(b":::", 1) if b":::" in raw else raw.rsplit(b"::", 1)
+        if len(partes) != 2: return None
+        data, iv = partes
+        key_hash = sha256(m.encode()).digest()
+        cipher = AES.new(key_hash, AES.MODE_CBC, iv)
+        return unpad(cipher.decrypt(data), AES.block_size).decode().strip()
+    except: return None
+
+# ==========================================================
+# 🎯 VINCULACIÓN INTELIGENTE (EL RETO)
+# ==========================================================
+def obtener_traductor_id(cursor, motor_fuente, ticker):
+    ticker = ticker.upper().strip()
+    
+    # 1. Búsqueda Directa (Exacta)
+    sql = "SELECT id FROM sys_traductor_simbolos WHERE motor_fuente=%s AND ticker_motor=%s LIMIT 1"
+    cursor.execute(sql, (motor_fuente, ticker))
+    row = cursor.fetchone()
+    if row: return row['id']
+
+    # 2. Lógica de "Limpieza de Prefijos"
+    # Si recibimos 'LDUSDT' o 'LDUSDC', queremos buscar 'USDT' o 'USDC'
+    ticker_limpio = ticker
+    if ticker.startswith("LD") and len(ticker) > 2:
+        ticker_limpio = ticker[2:]
+    elif ticker.startswith("STK") and len(ticker) > 3:
+        ticker_limpio = ticker[3:]
+
+    # 3. Búsqueda por Underlying en el mismo motor (Busca USDT si el ticker era LDUSDT)
+    sql = "SELECT id FROM sys_traductor_simbolos WHERE underlying=%s AND motor_fuente=%s LIMIT 1"
+    cursor.execute(sql, (ticker_limpio, motor_fuente))
+    row = cursor.fetchone()
+    if row: return row['id']
+
+    # 4. Búsqueda Global (Último recurso: buscar el underlying en cualquier motor)
+    sql = "SELECT id FROM sys_traductor_simbolos WHERE underlying=%s LIMIT 1"
+    cursor.execute(sql, (ticker_limpio,))
+    row = cursor.fetchone()
+    
+    return row['id'] if row else None
+
+# --- LA FUNCIÓN QUE FALTABA ---
+def disparar_radar(cursor, uid, ticker, ctx):
+    sql = "INSERT IGNORE INTO sys_simbolos_buscados (user_id, ticker, status, info) VALUES (%s,%s,'pendiente',%s)"
+    cursor.execute(sql, (uid, ticker, f"Detectado en {ctx}"))
+
+# ==========================================================
+# 💰 REGISTRO DE SALDOS y PRECIOS
+# ==========================================================
+def obtener_precio_usd(cursor, tid, asset_name):
+    asset_name = asset_name.upper()
+    
+    # 1. Forzar Stables a 1.0 (Sin buscar en DB)
+    stables = ['USDT', 'USDC', 'DAI', 'BUSD', 'PYUSD']
+    # Quitamos prefijos LD (Binance Savings) para la comparacion
+    clean_ticker = asset_name.replace("LD", "").replace("STK", "")
+    
+    if clean_ticker in stables:
+        return 1.0
+    
+    # 2. Búsqueda Inteligente en sys_precios_activos
+    try:
+        # Intentamos buscar por el traductor_id que es lo más preciso
+        sql = "SELECT price FROM sys_precios_activos WHERE traductor_id = %s ORDER BY last_update DESC LIMIT 1"
+        cursor.execute(sql, (tid,))
+        row = cursor.fetchone()
+        
+        if row and row['price'] > 0:
+            return float(row['price'])
+        
+        # 3. FALLBACK: Si no hay precio por ID, buscamos por el nombre limpio (BNB, NEAR...)
+        # Esto rescata los casos donde el ID sea diferente pero el activo sea el mismo
+        sql_fb = """
+            SELECT p.price 
+            FROM sys_precios_activos p
+            JOIN sys_traductor_simbolos t ON p.traductor_id = t.id
+            WHERE t.nombre_comun LIKE %s OR t.ticker_motor LIKE %s
+            ORDER BY p.last_update DESC LIMIT 1
+        """
+        cursor.execute(sql_fb, (f"%{clean_ticker}%", f"%{clean_ticker}%"))
+        row_fb = cursor.fetchone()
+        if row_fb:
+            return float(row_fb['price'])
+
+    except Exception as e:
+        print(f"      [!] Error en búsqueda de precio para {asset_name}: {e}")
+    
+    return 0.0
+
+def registrar_saldo(cursor, uid, tid, total, locked, asset_name, broker, tipo_cta="SPOT"):
+    disponible = total - locked
+    precio = obtener_precio_usd(cursor, tid, asset_name)
+    valor_usd = total * precio
+    
+    # Mapeo para Futuros
+    margen_usado = locked if tipo_cta == "FUTURES" else 0.0
+    
+    sql = """
+        INSERT INTO sys_saldos_usuarios 
+        (user_id, broker_name, asset, traductor_id, cantidad_total, cantidad_disponible, 
+         cantidad_bloqueada, margen_usado, valor_usd, precio_referencia, tipo_cuenta, tipo_lista, last_update)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'ACTIVO', NOW())
+        ON DUPLICATE KEY UPDATE
+        traductor_id = VALUES(traductor_id),
+        cantidad_total = VALUES(cantidad_total),
+        cantidad_disponible = VALUES(cantidad_disponible),
+        cantidad_bloqueada = VALUES(cantidad_bloqueada),
+        margen_usado = VALUES(margen_usado),
+        valor_usd = VALUES(valor_usd),
+        precio_referencia = VALUES(precio_referencia),
+        tipo_cuenta = VALUES(tipo_cuenta),
+        last_update = NOW()
+    """
+    cursor.execute(sql, (uid, broker, asset_name, tid, total, disponible, locked, margen_usado, valor_usd, precio, tipo_cta))
+# ==========================================================
+# 🟨 PROCESADOR BINANCE
+# ==========================================================
+def procesar_binance(db, uid, k, s):
+    try:
+        client = Client(k, s)
+        cursor = db.cursor(dictionary=True)
+
+        # SPOT
+        acc = client.get_account()
+        for b in acc['balances']:
+            total = float(b['free']) + float(b['locked'])
+            if total <= 0.000001: continue
+            ticker = b['asset']
+            tid = obtener_traductor_id(cursor, "binance_spot", ticker)
+            registrar_saldo(cursor, uid, tid, total, float(b['locked']), ticker, "BINANCE", "SPOT")
+            if not tid: disparar_radar(cursor, uid, ticker, "BINANCE SPOT")
+
+        # EARN / LENDING
+        try:
+            savings = client.get_simple_earn_account_realtime_data()
+            for s_asset in savings.get('rows', []):
+                total = float(s_asset['totalAmount'])
+                if total <= 0: continue
+                ticker = s_asset['asset']
+                # Buscamos con prefijo LD para consistencia contable
+                asset_ld = f"LD{ticker}"
+                tid = obtener_traductor_id(cursor, "binance_spot", asset_ld)
+                registrar_saldo(cursor, uid, tid, total, 0, asset_ld, "BINANCE", "LENDING")
+                if not tid: disparar_radar(cursor, uid, asset_ld, "BINANCE EARN")
+        except: pass 
+
+        print(f"    [OK] Binance User {uid} procesado.")
+    except Exception as e: print(f"    [!] Error Binance User {uid}: {e}")
+
+# ==========================================================
+# 🟦 PROCESADOR BINGX
+# ==========================================================
+def procesar_bingx(db, uid, ak, as_):
+    cursor = db.cursor(dictionary=True)
+    print(f"    [DEBUG] Iniciando BingX para User {uid}...")
+    
+    def bx_req(path, params=None):
+        if params is None: params = {}
+        ts = int(time.time()*1000)
+        params["timestamp"] = ts
+        query = "&".join(f"{k}={params[k]}" for k in sorted(params))
+        sig = hmac.new(as_.encode(), query.encode(), hashlib.sha256).hexdigest()
+        url = f"https://open-api.bingx.com{path}?{query}&signature={sig}"
+        r = requests.get(url, headers={"X-BX-APIKEY": ak}, timeout=10).json()
+        if r.get("code") != 0:
+            print(f"    [!] Error API BingX: {r.get('msg')} (Code: {r.get('code')})")
+        return r
+
+    # --- 1. SPOT ---
+    try:
+        res_spot = bx_req("/openApi/spot/v1/account/balance")
+        if res_spot.get("data"):
+            for b in res_spot['data']['balances']:
+                total = float(b['free']) + float(b['locked'])
+                if total <= 0.000001: continue
+                ticker = b['asset']
+                tid = obtener_traductor_id(cursor, "bingx_crypto", ticker)
+                registrar_saldo(cursor, uid, tid, total, float(b['locked']), ticker, "BINGX", "SPOT")
+            print(f"    [OK] BingX Spot procesado.")
+    except Exception as e: 
+        print(f"    [!] Error crítico en BingX Spot: {e}")
+
+    # --- 2. FUTURES PERPETUAL (Revertido a lógica v5.5.6 que funcionaba) ---
+    try:
+        res_perp = bx_req("/openApi/swap/v2/user/balance")
+        # Accedemos directo al balance como en la versión funcional
+        data_balance = res_perp.get("data", {})
+        if isinstance(data_balance, list): 
+            balances = data_balance
+        else:
+            # Si es un dict, lo buscamos en la llave 'balance' o lo metemos en lista
+            balances = [data_balance.get("balance", {})] if "balance" in data_balance else [data_balance]
+
+        for item in balances:
+            ticker = item.get("asset")
+            if not ticker: continue
+            
+            total = float(item.get("balance", 0))
+            locked = float(item.get("freezedMargin", 0))
+            if total <= 0: continue
+            
+            tid = obtener_traductor_id(cursor, "bingx_usdt_future", ticker)
+            registrar_saldo(cursor, uid, tid, total, locked, ticker, "BINGX", "FUTURES")
+        
+        print(f"    [OK] BingX Perpetual procesado.")
+    except Exception as e: 
+        print(f"    [!] Error crítico en BingX Perp: {e}")
+
+
+
+# ==========================================================
+# 🚀 EJECUCIÓN
+# ==========================================================
+def run():
+    print("💎 MOTOR SALDOS v5.6.2 - VINCULACIÓN MAESTRA ACTIVA")
+    while True:
+        try:
+            db = mysql.connector.connect(**config.DB_CONFIG)
+            cursor = db.cursor(dictionary=True)
+            cursor.execute("SELECT user_id, api_key, api_secret, broker_name FROM api_keys WHERE status=1")
+            users = cursor.fetchall()
+
+            for u in users:
+                k = descifrar_dato(u['api_key'], MASTER_KEY)
+                s = descifrar_dato(u['api_secret'], MASTER_KEY)
+                if not k or not s: continue
+                
+                if u['broker_name'].upper() == "BINANCE":
+                    procesar_binance(db, u['user_id'], k, s)
+                elif u['broker_name'].upper() == "BINGX":
+                    procesar_bingx(db, u['user_id'], k, s)
+            
+            db.commit()
+            db.close()
+        except Exception as e: print(f"CRITICAL: {e}")
+        time.sleep(60)
+
+if __name__ == "__main__":
+    run()
