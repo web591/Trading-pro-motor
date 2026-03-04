@@ -344,14 +344,13 @@ def validar_tarea_existente(conn, id_tarea, underlying_consulta, tipo_investment
         cur.close()
 
 # ==========================================================
-# 🚀 ORQUESTADOR V2.21 - MULTIUSUARIO ONLINE + CACHE + TRAD_ID CONSISTENTE
+# 🚀 ORQUESTADOR V2.23 - LIMPIEZA DE PREFIJOS + CACHE
 # ==========================================================
 def bucle_operativo():
-    print("💎 MOTOR MAESTRO V2.21 - MULTIUSUARIO ONLINE (MEMORY + TRAD_ID ENABLED)")
+    print("💎 MOTOR MAESTRO V2.23 - MULTIUSUARIO ONLINE (EARN-CLEANER ENABLED)")
     conn = None
     while True:
         try:
-            # Conexion a DB
             if conn is None or not conn.is_connected():
                 conn = mysql.connector.connect(**DB_CONFIG)
 
@@ -365,21 +364,32 @@ def bucle_operativo():
 
             if tarea:
                 id_tarea = tarea['id']
-                tk_busqueda = tarea['ticker'].upper().strip()
+                ticker_raw = tarea['ticker'].upper().strip()
+
+                # --- 🧠 LÓGICA DE LIMPIEZA V2.23 ---
+                tk_busqueda = ticker_raw
+                if ticker_raw.startswith("LD") and len(ticker_raw) > 2:
+                    tk_busqueda = ticker_raw[2:]
+                elif ticker_raw.startswith("STK") and len(ticker_raw) > 3:
+                    tk_busqueda = ticker_raw[3:]
+                # -----------------------------------
 
                 # Marcar como procesando
                 cur_upd = conn.cursor()
                 cur_upd.execute("UPDATE sys_simbolos_buscados SET status = 'procesando' WHERE id = %s", (id_tarea,))
                 conn.commit()
                 cur_upd.close()
-                print(f"\n🎯 PROCESANDO: {tk_busqueda} (ID: {id_tarea})")
+                
+                # Reportar limpieza si ocurrió
+                if tk_busqueda != ticker_raw:
+                    print(f"\n🎯 PROCESANDO: {ticker_raw} -> Limpiado a: {tk_busqueda} (ID: {id_tarea})")
+                else:
+                    print(f"\n🎯 PROCESANDO: {tk_busqueda} (ID: {id_tarea})")
 
                 # ==========================================================
-                # 🔹 DETERMINAR UNDERLYING Y TRADUCTOR_ID - mejora 2.16
+                # 🔹 DETERMINAR UNDERLYING Y TRADUCTOR_ID (Usando tk_busqueda)
                 # ==========================================================
                 cur_u = conn.cursor(dictionary=True)
-
-                # Buscar directamente por underlying primero
                 cur_u.execute("""
                     SELECT id, underlying 
                     FROM sys_traductor_simbolos 
@@ -388,16 +398,16 @@ def bucle_operativo():
                 """, (tk_busqueda,))
 
                 row = cur_u.fetchone()
-
                 if row:
                     underlying_consulta = row["underlying"].upper()
                     trad_id = row["id"]
                 else:
                     underlying_consulta = tk_busqueda.upper()
                     trad_id = None
-
                 cur_u.close()
 
+                # El resto del código (Memoria Global e Interrogación de mercados) 
+                # ya usará automáticamente 'tk_busqueda' y 'underlying_consulta'
 
                 # ==========================================================
                 # 🔹 MEMORIA GLOBAL
