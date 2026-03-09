@@ -316,7 +316,7 @@ def procesar_binance(db, uid, k, s):
         print(f"    [INFO] Binance Trades: {t_count} nuevos procesados.")
 
 
-        # --- TRADES FUTUROS BINANCE (UM: USDT-M / CM: COIN-M) ---
+# --- TRADES FUTUROS BINANCE (UM: USDT-M / CM: COIN-M) ---
         mapping_futuros = [
             {'motor': 'binance_usdt_future', 'endpoint': 'trades_futures_um'},
             {'motor': 'binance_coin_future', 'endpoint': 'trades_futures_cm'}

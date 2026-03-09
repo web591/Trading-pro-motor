@@ -24,10 +24,49 @@ def descifrar_dato(t, m):
         return unpad(cipher.decrypt(data), AES.block_size).decode().strip()
     except: return None
 
+# ==========================================================
+# 🎯 VINCULACIÓN MAESTRA v6.6.7 - ESCENARIO B (POR EXCHANGE)
+# ==========================================================
 def obtener_traductor_id(cursor, motor_fuente, ticker):
-    sql = "SELECT id, categoria_producto, tipo_investment FROM sys_traductor_simbolos WHERE motor_fuente=%s AND ticker_motor=%s AND is_active=1 LIMIT 1"
+    ticker = ticker.upper().strip()
+
+    # 1️⃣ Búsqueda exacta por motor + ticker
+    sql = """
+        SELECT id, categoria_producto, tipo_investment
+        FROM sys_traductor_simbolos
+        WHERE motor_fuente = %s
+        AND ticker_motor = %s
+        LIMIT 1
+    """
     cursor.execute(sql, (motor_fuente, ticker))
-    return cursor.fetchone()
+    row = cursor.fetchone()
+    if row:
+        return row
+
+    # 2️⃣ Limpieza de prefijos (LD, STK)
+    ticker_limpio = ticker
+    if ticker.startswith("LD") and len(ticker) > 2:
+        ticker_limpio = ticker[2:]
+    elif ticker.startswith("STK") and len(ticker) > 3:
+        ticker_limpio = ticker[3:]
+
+    # 3️⃣ Buscar por underlying pero SOLO en el mismo motor
+    sql = """
+        SELECT id, categoria_producto, tipo_investment
+        FROM sys_traductor_simbolos
+        WHERE motor_fuente = %s
+        AND underlying = %s
+        LIMIT 1
+    """
+    cursor.execute(sql, (motor_fuente, ticker_limpio))
+    row = cursor.fetchone()
+
+    return row if row else None
+
+# --- LA FUNCIÓN QUE FALTABA ---
+def disparar_radar(cursor, uid, ticker, ctx):
+    sql = "INSERT IGNORE INTO sys_simbolos_buscados (user_id, ticker, status, info) VALUES (%s,%s,'pendiente',%s)"
+    cursor.execute(sql, (uid, ticker, f"Detectado en {ctx}"))    
 
 def obtener_precio_usd(cursor, tid, asset_name):
     asset_name = asset_name.upper()
@@ -63,7 +102,7 @@ def obtener_punto_inicio_sincro(cursor, uid, broker, endpoint):
     sql = "SELECT last_timestamp FROM sys_sync_estado WHERE user_id = %s AND broker = %s AND endpoint = %s LIMIT 1"
     cursor.execute(sql, (uid, broker, endpoint))
     row = cursor.fetchone()
-    return int(row['last_timestamp']) if row and row['last_timestamp'] else 1735689600000
+    return int(row['last_timestamp']) if row and row['last_timestamp'] else 1633046400000
 
 def actualizar_punto_sincro(cursor, uid, broker, endpoint, nuevo_ts):
     sql = """
@@ -74,26 +113,85 @@ def actualizar_punto_sincro(cursor, uid, broker, endpoint, nuevo_ts):
     cursor.execute(sql, (uid, broker, endpoint, nuevo_ts))
 
 # ==========================================================
-# 📉 REGISTRO DE TRADES
+# 📉 REGISTRO DE TRADES v6.7.1 (FIX BINGX FUTURES)
 # ==========================================================
 def registrar_trade_completo(cursor, uid, t_data, info_traductor, broker_nombre):
-    try:
-        tipo_prod = info_traductor['categoria_producto'] if info_traductor else 'SPOT'
-        tipo_merc = info_traductor['tipo_investment'] if info_traductor else 'CRYPTO'
-        id_vinculo = f"{uid}-{t_data['orderId']}"
-        
-        sql_global = "INSERT IGNORE INTO transacciones_globales (id_externo, user_id, exchange, cuenta_tipo, categoria, asset, monto_neto, comision, fecha_utc, broker) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
-        cursor.execute(sql_global, (id_vinculo, uid, broker_nombre, tipo_prod, 'TRADE', t_data['symbol'], t_data['quoteQty'], t_data['commission'], t_data['fecha_sql'], broker_nombre))
 
-        sql_detalle = """
-            INSERT IGNORE INTO detalle_trades 
-            (user_id, exchange, tipo_producto, exchange_fuente, tipo_mercado, id_externo_ref, fecha_utc, symbol, lado, precio_ejecucion, cantidad_ejecutada, commission, commission_asset, quote_qty, is_maker, broker, trade_id_externo, raw_json) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    try:
+        traductor_id = info_traductor['id'] if info_traductor else None
+        categoria_producto = info_traductor['categoria_producto'] if info_traductor else 'SPOT'
+        tipo_investment = info_traductor['tipo_investment'] if info_traductor else 'CRYPTO'
+        motor_fuente = broker_nombre.lower()
+
+        # 🔥 FIX CRÍTICO BINGX FUTURES
+        if broker_nombre.upper() == "BINGX" and t_data.get("es_futuro"):
+            categoria_producto = "FUTURES"
+
+        position_side = t_data.get('positionSide')
+
+        id_vinculo = f"{uid}-{t_data['orderId']}"
+
+        # GLOBAL
+        sql_global = """
+        INSERT IGNORE INTO transacciones_globales
+        (id_externo, user_id, exchange, cuenta_tipo, categoria, asset,
+         traductor_id, monto_neto, comision, fecha_utc, broker)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """
-        cursor.execute(sql_detalle, (uid, broker_nombre, tipo_prod, broker_nombre, tipo_merc, id_vinculo, t_data['fecha_sql'], t_data['symbol'], t_data['side'], t_data['price'], t_data['qty'], t_data['commission'], t_data['commissionAsset'], t_data['quoteQty'], 1 if t_data.get('isMaker') else 0, broker_nombre, f"TRD-{t_data['orderId']}", json.dumps(t_data)))
+
+        cursor.execute(sql_global, (
+            id_vinculo,
+            uid,
+            broker_nombre,
+            categoria_producto,
+            'TRADE',
+            t_data['symbol'],
+            traductor_id,
+            t_data['quoteQty'],
+            t_data['commission'],
+            t_data['fecha_sql'],
+            broker_nombre
+        ))
+
+        # DETALLE
+        sql_detalle = """
+        INSERT IGNORE INTO detalle_trades
+        (user_id, traductor_id, broker, motor_fuente,
+         categoria_producto, tipo_investment,
+         id_externo_ref, fecha_utc, symbol, lado, position_side,
+         precio_ejecucion, cantidad_ejecutada,
+         commission, commission_asset, quote_qty,
+         is_maker, trade_id_externo, raw_json)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                %s,%s,%s,%s,%s,%s,%s,%s)
+        """
+
+        cursor.execute(sql_detalle, (
+            uid,
+            traductor_id,
+            broker_nombre,
+            motor_fuente,
+            categoria_producto,
+            tipo_investment,
+            id_vinculo,
+            t_data['fecha_sql'],
+            t_data['symbol'],
+            t_data['side'],
+            position_side,
+            t_data['price'],
+            t_data['qty'],
+            t_data['commission'],
+            t_data['commissionAsset'],
+            t_data['quoteQty'],
+            1 if t_data.get('isMaker') else 0,
+            f"TRD-{t_data['orderId']}",
+            json.dumps(t_data)
+        ))
+
         return True
+
     except Exception as e:
-        print(f"        [!] ERROR DE INSERCIÓN DETALLE: {e}")
+        print(f"        [!] ERROR DETALLE v6.7.1: {e}")
         return False
 
 # ==========================================================
@@ -101,8 +199,6 @@ def registrar_trade_completo(cursor, uid, t_data, info_traductor, broker_nombre)
 # ==========================================================
 def procesar_bingx(db, uid, ak, as_):
     cursor = db.cursor(dictionary=True)
-    # Definimos el punto de inicio para evitar el error 'name start_ts is not defined'
-    start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINGX", "trades_futures")
     print(f"    [DEBUG] Iniciando ciclo completo BingX para User {uid}...")
     
     def bx_req(path, params=None):
@@ -117,28 +213,45 @@ def procesar_bingx(db, uid, ak, as_):
             return r.json()
         except: return {}
 
+    # ==========================================================
+    # 🎯 BUSQUEDA TRADUCTOR BINGX - ESCENARIO B PURO
+    # ==========================================================
     def buscar_en_traductor_bingx(simbolo_api):
-        if not simbolo_api: return None
-        s_api = simbolo_api.upper().strip()
-        s_limpio = s_api.replace("-", "").replace("/", "").replace("=X", "")
-        und_api = s_limpio.replace("USDT", "").replace("USDC", "").replace("USD", "")
+        if not simbolo_api:
+            return None
 
-        # 1. Búsqueda por Match Exacto o Underlying (BingX -> Binance -> Cualquier otro)
-        sql = """SELECT id, ticker_motor, underlying, categoria_producto, tipo_investment 
-                 FROM sys_traductor_simbolos 
-                 WHERE is_active = 1 AND (
-                    (motor_fuente LIKE 'bingx_%%' AND (ticker_motor = %s OR REPLACE(ticker_motor, '-', '') = %s OR underlying = %s))
-                    OR (motor_fuente LIKE 'binance_%%' AND (ticker_motor = %s OR REPLACE(ticker_motor, '-', '') = %s))
-                    OR (underlying = %s)
-                 ) ORDER BY (motor_fuente LIKE 'bingx_%%') DESC LIMIT 1"""
-        cursor.execute(sql, (s_api, s_limpio, und_api, s_api, s_limpio, und_api))
-        res = cursor.fetchone()
-        if res: return res
+        ticker = simbolo_api.upper().strip()
+        ticker_limpio = ticker.replace("-", "").replace("/", "").replace("=X", "")
+
+        # 1️⃣ Exacto por motor
+        sql = """
+            SELECT id, categoria_producto, tipo_investment
+            FROM sys_traductor_simbolos
+            WHERE motor_fuente = 'bingx_crypto'
+            AND ticker_motor = %s
+            LIMIT 1
+        """
+        cursor.execute(sql, (ticker_limpio,))
+        row = cursor.fetchone()
+        if row:
+            return row
+
+        # 2️⃣ Underlying SOLO en bingx_crypto
+        underlying = ticker_limpio.replace("USDT", "").replace("USDC", "").replace("USD", "")
+        sql = """
+            SELECT id, categoria_producto, tipo_investment
+            FROM sys_traductor_simbolos
+            WHERE motor_fuente = 'bingx_crypto'
+            AND underlying = %s
+            LIMIT 1
+        """
+        cursor.execute(sql, (underlying,))
+        return cursor.fetchone()
 
         # 2. CAPA DE RESCATE (Para AAPLX, TSLAX, etc.) - Si nada arriba funcionó
         sql_rescate = """SELECT id, ticker_motor, underlying, categoria_producto, tipo_investment 
                          FROM sys_traductor_simbolos 
-                         WHERE is_active = 1 AND (motor_fuente LIKE 'bingx_%%' OR motor_fuente LIKE 'binance_%%')
+                         WHERE (motor_fuente LIKE 'bingx_%%' OR motor_fuente LIKE 'binance_%%')
                          AND %s LIKE CONCAT('%%', underlying, '%%')
                          LIMIT 1"""
         cursor.execute(sql_rescate, (s_limpio,))
@@ -150,7 +263,7 @@ def procesar_bingx(db, uid, ak, as_):
                          FROM sys_traductor_simbolos 
                          WHERE motor_fuente LIKE 'bingx_%%' 
                          AND %s LIKE CONCAT('%%', underlying, '%%')
-                         AND is_active = 1 LIMIT 1"""
+                         LIMIT 1"""
             cursor.execute(sql_cfd, (s_limpio,))
             res = cursor.fetchone()
         return res
@@ -251,36 +364,49 @@ def procesar_bingx(db, uid, ak, as_):
             else:
                 print(f"    [!] Error Inserción: {err}")
 
-# --- 4. SINCRONIZACIÓN DE TRADES BINGX (BARRIDO TOTAL) ---
-    cursor.execute("SELECT * FROM sys_traductor_simbolos WHERE motor_fuente LIKE 'bingx_%%' AND is_active = 1")
-    universo_bingx = cursor.fetchall()
-    
-    t_count = 0
-    for item in universo_bingx:
-        sym = item['ticker_motor']
-        res_tr = bx_req("/openApi/swap/v2/trade/allOrders", {"symbol": sym, "startTime": start_ts})
+    # --- 4. SINCRONIZACIÓN DE TRADES BINGX (Lógica Robusta) ---
+    try:
+        start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINGX", "trades_futures")
+        res_tr = bx_req("/openApi/swap/v2/trade/allOrders", {"startTime": start_ts})
         
-        if res_tr.get("code") == 0:
-            trades_raw = res_tr.get("data", [])
-            if isinstance(trades_raw, list):
-                for t in trades_raw:
-                    if str(t.get('status', '')).upper() in ['FILLED', 'PARTIALLY_FILLED', 'CLOSED', 'COMPLETED']:
-                        t_f = {
-                            'orderId': str(t['orderId']),
-                            'symbol': sym,
-                            'side': t['side'],
-                            'price': float(t.get('avgPrice') or t.get('price') or 0),
-                            'qty': float(t.get('executedQty', 0)),
-                            'quoteQty': float(t.get('cumQuote', 0)),
-                            'commission': abs(float(t.get('commission', 0))),
-                            'commissionAsset': 'USDT',
-                            'fecha_sql': datetime.fromtimestamp(t.get('updateTime', time.time()*1000)/1000).strftime('%Y-%m-%d %H:%M:%S')
-                        }
-                        if registrar_trade_completo(cursor, uid, t_f, item, "BINGX"):
-                            t_count += 1
-    
-    actualizar_punto_sincro(cursor, uid, "BINGX", "trades_futures", int(time.time()*1000))
-    print(f"    [INFO] BingX Trades: {t_count} nuevos procesados.")
+        t_count = 0
+        # Aseguramos que data sea una lista antes de iterar
+        trades_raw = res_tr.get("data", [])
+        if isinstance(trades_raw, list):
+            for t in trades_raw:
+                # Procesamos órdenes que hayan tenido ejecución (FILLED / PARTIALLY_FILLED)
+                status = str(t.get('status', '')).upper()
+                if status in ['FILLED', 'PARTIALLY_FILLED']:
+                    sym = t.get('symbol')
+                    info = buscar_en_traductor_bingx(sym)
+                    
+                    # Mapeo de campos según la API de BingX Perpetual
+                    t_f = {
+                        'orderId': str(t['orderId']),
+                        'symbol': sym,
+                        'side': t['side'],
+                        'price': float(t.get('avgPrice') or t.get('price') or 0),
+                        'qty': float(t.get('executedQty', 0)),
+                        'quoteQty': float(t.get('cumQuote', 0)),
+                        'commission': abs(float(t.get('commission', 0))), # Usamos valor absoluto
+                        'commissionAsset': 'USDT',
+                        'fecha_sql': datetime.fromtimestamp(t.get('updateTime', time.time()*1000)/1000).strftime('%Y-%m-%d %H:%M:%S'),
+                        'isMaker': False 
+                    }
+                    
+                    t_f['es_futuro'] = True
+                    
+                    if registrar_trade_completo(cursor, uid, t_f, info, "BINGX"):
+                        t_count += 1
+            
+            # Solo actualizamos el timestamp si la respuesta fue exitosa
+            if res_tr.get("code") == 0:
+                actualizar_punto_sincro(cursor, uid, "BINGX", "trades_futures", int(time.time()*1000))
+                
+        print(f"    [INFO] BingX Trades: {t_count} nuevos procesados.")
+    except Exception as e:
+        print(f"    [!] Error en Historial Trades BingX: {e}")
+
 # ==========================================================
 # 🟨 PROCESADOR BINANCE (CON LOGS ESTRATÉGICOS)
 # ==========================================================
@@ -302,7 +428,7 @@ def procesar_binance(db, uid, k, s):
 
         # TRADES
         start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINANCE", "trades_spot")
-        cursor.execute("SELECT * FROM sys_traductor_simbolos WHERE motor_fuente = 'binance_spot' AND is_active = 1")
+        cursor.execute("SELECT * FROM sys_traductor_simbolos WHERE motor_fuente = 'binance_spot'")
         diccionario = cursor.fetchall()
         t_count = 0
         for item in diccionario:
@@ -314,50 +440,6 @@ def procesar_binance(db, uid, k, s):
             except: continue
         actualizar_punto_sincro(cursor, uid, "BINANCE", "trades_spot", int(time.time()*1000))
         print(f"    [INFO] Binance Trades: {t_count} nuevos procesados.")
-
-
-        # --- TRADES FUTUROS BINANCE (UM: USDT-M / CM: COIN-M) ---
-        mapping_futuros = [
-            {'motor': 'binance_usdt_future', 'endpoint': 'trades_futures_um'},
-            {'motor': 'binance_coin_future', 'endpoint': 'trades_futures_cm'}
-        ]
-
-        for config_f in mapping_futuros:
-            try:
-                start_ts_f = obtener_punto_inicio_sincro(cursor, uid, "BINANCE", config_f['endpoint'])
-                cursor.execute("SELECT * FROM sys_traductor_simbolos WHERE motor_fuente = %s AND is_active = 1", (config_f['motor'],))
-                dict_fut = cursor.fetchall()
-                
-                tf_count = 0
-                for item in dict_fut:
-                    try:
-                        # Seleccionamos el método según el tipo de futuro
-                        if config_f['motor'] == 'binance_usdt_future':
-                            f_trades = client.futures_account_trades(symbol=item['ticker_motor'], startTime=start_ts_f)
-                        else:
-                            # COIN-M usa dapi (Delivery API)
-                            f_trades = client.futures_coin_account_trades(symbol=item['ticker_motor'], startTime=start_ts_f)
-                        
-                        for t in f_trades:
-                            t_f = {
-                                'orderId': str(t['orderId']), 
-                                'symbol': t['symbol'], 
-                                'side': 'BUY' if float(t.get('qty', t.get('accQty', 0))) > 0 else 'SELL',
-                                'price': float(t['price']), 
-                                'qty': abs(float(t.get('qty', t.get('accQty', 0)))), 
-                                'quoteQty': abs(float(t.get('quoteQty', 0))), 
-                                'commission': float(t['commission']), 
-                                'commissionAsset': t['commissionAsset'], 
-                                'fecha_sql': datetime.fromtimestamp(t['time']/1000).strftime('%Y-%m-%d %H:%M:%S')
-                            }
-                            if registrar_trade_completo(cursor, uid, t_f, item, "BINANCE"):
-                                tf_count += 1
-                    except: continue
-                
-                actualizar_punto_sincro(cursor, uid, "BINANCE", config_f['endpoint'], int(time.time()*1000))
-                print(f"    [INFO] Binance {config_f['motor']}: {tf_count} nuevos.")
-            except Exception as e:
-                print(f"    [!] Error en {config_f['motor']}: {e}")
 
         # OPEN ORDERS
         cursor.execute("DELETE FROM sys_open_orders_spot WHERE user_id = %s AND broker_name = 'BINANCE'", (uid,))
@@ -374,7 +456,7 @@ def procesar_binance(db, uid, k, s):
 # 🚀 EJECUCIÓN PRINCIPAL
 # ==========================================================
 def run():
-    print(f"💎 MOTOR v6.7.1 - debug bingxSALDOS + TRADES BINANCE-BINGX")
+    print(f"💎 MOTOR v6.6.6.01 - SALDOS + TRADES BINANCE-BINGX")
     while True:
         print(f"\n{'='*65}\n🔄 INICIO CICLO: {datetime.now().strftime('%H:%M:%S')}\n{'='*65}")
         db = None
