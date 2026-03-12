@@ -427,13 +427,18 @@ def procesar_bingx(db, uid, ak, as_):
                 print(f"    [!] Error Inserción: {err}")
 
     # ==========================================================
-    # --- 4. SINCRONIZACIÓN REAL DE TRADES BINGX (FILLS) ---
+    # 🟦 BINGX FUTURES FILLS
     # Version 6.7.2
     # ==========================================================
 
     try:
 
-        start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINGX", "trades_futures")
+        start_ts = obtener_punto_inicio_sincro(
+            cursor,
+            uid,
+            "BINGX",
+            "trades_futures"
+        )
 
         res_tr = bx_req(
             "/openApi/swap/v2/trade/fills",
@@ -442,41 +447,70 @@ def procesar_bingx(db, uid, ak, as_):
 
         trades_raw = res_tr.get("data", [])
 
-        t_count = 0
+        trades_insertados = 0
 
         for t in trades_raw:
 
-            sym = t.get("symbol")
+            symbol = t.get("symbol")
 
-            info = buscar_en_traductor_bingx(sym)
+            info = buscar_en_traductor_bingx(symbol)
 
             if not info:
-                print(f"[AVISO] Trade {sym} sin traductor")
-                generar_tarea_incorporacion(cursor, uid, "BINGX", sym, "TRADE_FUTURES")
 
-            t_f = {
+                print(f"[BINGX] ⚠ Símbolo sin traductor: {symbol}")
 
-                "orderId": str(t.get("orderId")),
+                generar_tarea_incorporacion(
+                    cursor,
+                    uid,
+                    "BINGX",
+                    symbol,
+                    "TRADE_FUTURES"
+                )
+
+                continue
+
+            qty = float(t.get("qty",0))
+            price = float(t.get("price",0))
+
+            trade_data = {
+
                 "tradeId": str(t.get("tradeId")),
-                "symbol": sym,
+                "orderId": str(t.get("orderId")),
+
+                "symbol": symbol,
+
                 "side": t.get("side"),
-                "price": float(t.get("price",0)),
-                "qty": float(t.get("qty",0)),
-                "quoteQty": float(t.get("price",0)) * float(t.get("qty",0)),
+
+                "price": price,
+
+                "qty": qty,
+
+                "quoteQty": qty * price,
+
                 "commission": abs(float(t.get("commission",0))),
+
                 "commissionAsset": "USDT",
+
                 "realizedPnl": float(t.get("realizedPnl",0)),
+
                 "fecha_sql": datetime.fromtimestamp(
                     t.get("time",0)/1000
                 ).strftime("%Y-%m-%d %H:%M:%S"),
 
                 "isMaker": False,
+
                 "es_futuro": True
             }
 
-            if registrar_trade(cursor, uid, t_f, info, "BINGX"):
+            if registrar_trade(
+                cursor,
+                uid,
+                trade_data,
+                info,
+                "BINGX"
+            ):
 
-                t_count += 1
+                trades_insertados += 1
 
 
         actualizar_punto_sincro(
@@ -487,11 +521,11 @@ def procesar_bingx(db, uid, ak, as_):
             int(time.time()*1000)
         )
 
-        print(f"[BINGX] Trades reales procesados: {t_count}")
+        print(f"[BINGX] Trades futures insertados: {trades_insertados}")
 
     except Exception as e:
 
-        print(f"[BINGX TRADES ERROR] {e}")
+        print(f"[BINGX FUTURES ERROR] {e}")
 
     # ==========================================================
     # 🟩 BINGX SPOT TRADES
