@@ -169,9 +169,7 @@ def actualizar_punto_sincro(cursor, uid, broker, endpoint, nuevo_ts):
     """
     cursor.execute(sql, (uid, broker, endpoint, nuevo_ts))
 
-# ==========================================================
-# 📉 REGISTRO DE TRADES v6.7.1 (FIX BINGX FUTURES)
-# ==========================================================
+
 # ==========================================================
 # 📉 REGISTRO DE TRADES v6.7.1 (FIX BINGX FUTURES)
 # ==========================================================
@@ -427,9 +425,11 @@ def procesar_bingx(db, uid, ak, as_):
                 print(f"    [!] Error Inserción: {err}")
 
     # ==========================================================
-    # 🟦 BINGX FUTURES FILLS
-    # Version 6.7.2
+    # 🟧 BINGX FUTURES TRADES
+    # Version 6.7.3 (FIX PROFIT + STRUCTURE)
     # ==========================================================
+
+    print("        >>> BINGX FUTURES TRADES <<<")
 
     try:
 
@@ -441,23 +441,26 @@ def procesar_bingx(db, uid, ak, as_):
         )
 
         res_tr = bx_req(
-            "/openApi/swap/v2/trade/fills",
-            {"startTime": start_ts}
+            "/openApi/swap/v2/trade/allOrders",
+            {"limit": 100}
         )
 
-        trades_raw = res_tr.get("data", [])
+        print("[BINGX DEBUG] Respuesta orders:", res_tr)
+
+        orders = res_tr.get("data", {}).get("orders", [])
 
         trades_insertados = 0
 
-        for t in trades_raw:
+        for o in orders:
 
-            symbol = t.get("symbol")
+            if o.get("status") != "FILLED":
+                continue
+
+            symbol = o.get("symbol")
 
             info = buscar_en_traductor_bingx(symbol)
 
             if not info:
-
-                print(f"[BINGX] ⚠ Símbolo sin traductor: {symbol}")
 
                 generar_tarea_incorporacion(
                     cursor,
@@ -469,32 +472,31 @@ def procesar_bingx(db, uid, ak, as_):
 
                 continue
 
-            qty = float(t.get("qty",0))
-            price = float(t.get("price",0))
+            qty = float(o.get("executedQty", 0))
+            price = float(o.get("avgPrice", 0))
 
             trade_data = {
 
-                "tradeId": str(t.get("tradeId")),
-                "orderId": str(t.get("orderId")),
-
+                "tradeId": str(o.get("orderId")),
+                "orderId": str(o.get("orderId")),
                 "symbol": symbol,
 
-                "side": t.get("side"),
+                "side": o.get("side"),
+                "positionSide": o.get("positionSide"),
 
                 "price": price,
-
                 "qty": qty,
 
-                "quoteQty": qty * price,
+                "quoteQty": float(o.get("cumQuote",0)),
 
-                "commission": abs(float(t.get("commission",0))),
-
+                "commission": abs(float(o.get("commission",0))),
                 "commissionAsset": "USDT",
 
-                "realizedPnl": float(t.get("realizedPnl",0)),
+                # 🔴 AQUÍ GUARDAMOS EL PROFIT REAL
+                "realizedPnl": float(o.get("profit",0)),
 
                 "fecha_sql": datetime.fromtimestamp(
-                    t.get("time",0)/1000
+                    o.get("updateTime",0)/1000
                 ).strftime("%Y-%m-%d %H:%M:%S"),
 
                 "isMaker": False,
@@ -511,7 +513,6 @@ def procesar_bingx(db, uid, ak, as_):
             ):
 
                 trades_insertados += 1
-
 
         actualizar_punto_sincro(
             cursor,
@@ -532,6 +533,8 @@ def procesar_bingx(db, uid, ak, as_):
     # Version 6.7.2
     # ==========================================================
 
+    print("        >>> BINGX SPOT TRADES <<<")
+
     try:
 
         start_ts = obtener_punto_inicio_sincro(
@@ -546,7 +549,7 @@ def procesar_bingx(db, uid, ak, as_):
             {"startTime": start_ts}
         )
 
-        trades_raw = res_tr.get("data", [])
+        trades_raw = res_tr.get("data", {}).get("trades", [])
 
         trades_insertados = 0
 
