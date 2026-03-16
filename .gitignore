@@ -4,3 +4,6 @@ config.py
 __pycache__/
 mini_script10_binance_debug.py
 mini_script10_bingx_debug.py
+recuperador_historico_binance.v1.0.py
+recuperador_historico_bingx.v1.0.py
+recuperador_historico_binance_trades.v1.0.py

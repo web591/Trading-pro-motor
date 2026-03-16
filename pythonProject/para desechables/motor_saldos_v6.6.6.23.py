@@ -210,7 +210,7 @@ def registrar_trade(cursor, uid, t_data, info_traductor, broker_nombre):
                 symbol, lado, position_side, reduce_only, precio_ejecucion, 
                 cantidad_ejecutada, commission, commission_asset,
                 quote_qty, pnl_realizado, is_maker, trade_id_externo, raw_json
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE raw_json = VALUES(raw_json)
         """
         
@@ -808,7 +808,7 @@ def procesar_binance_um_futures(db, uid, k, s):
         start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINANCE", "trades_um_futures")
 
         cursor.execute("""
-            SELECT id, ticker_motor, categoria_producto, tipo_investment
+            SELECT id, ticker_motor, categoria_producto, tipo_investment, motor_fuente
             FROM sys_traductor_simbolos
             WHERE motor_fuente = 'binance_usdt_future'
         """)

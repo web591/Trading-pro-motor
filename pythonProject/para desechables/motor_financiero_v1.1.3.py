@@ -1,0 +1,759 @@
+import requests
+import time
+import hmac
+import hashlib
+import mysql.connector
+import base64
+import os
+import json
+from urllib.parse import urlencode
+from hashlib import sha256
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
+
+# Intento de cargar config si existe
+try:
+    import config
+except ImportError:
+    config = None
+
+# ==========================================================
+# 🚩 DISFRAZ Y SEGURIDAD
+# ==========================================================
+bingx_session = requests.Session()
+MASTER_KEY = os.getenv('APP_ENCRYPTION_KEY') or getattr(config, 'ENCRYPTION_KEY', None)
+
+def get_headers_bingx(api_key):
+    return {
+        "X-BX-APIKEY": api_key,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://bingx.com/",
+        "Connection": "keep-alive"
+    }
+
+def descifrar_dato(t, m):
+    try:
+        if not t or not m: return None
+        raw = base64.b64decode(t.strip())
+        partes = raw.rsplit(b":::", 1) if b":::" in raw else raw.rsplit(b"::", 1)
+        if len(partes) != 2: return None
+        data, iv = partes
+        key_hash = sha256(m.encode()).digest()
+        cipher = AES.new(key_hash, AES.MODE_CBC, iv)
+        return unpad(cipher.decrypt(data), AES.block_size).decode().strip()
+    except: return None
+
+# ==========================================================
+# 🎯 VINCULACIÓN Y PRECIOS
+# ==========================================================
+def obtener_traductor_id(cursor, motor_fuente, ticker):
+    ticker = ticker.upper().strip()
+    sql = "SELECT id FROM sys_traductor_simbolos WHERE motor_fuente = %s AND ticker_motor = %s LIMIT 1"
+    cursor.execute(sql, (motor_fuente, ticker))
+    row = cursor.fetchone()
+    if row: return row
+    
+    ticker_limpio = ticker[2:] if ticker.startswith("LD") else (ticker[3:] if ticker.startswith("STK") else ticker)
+    sql = "SELECT id FROM sys_traductor_simbolos WHERE motor_fuente = %s AND underlying = %s LIMIT 1"
+    cursor.execute(sql, (motor_fuente, ticker_limpio))
+    return cursor.fetchone()
+
+def obtener_precio_usd(cursor, tid, asset_name):
+    if asset_name.upper() in ['USDT', 'USDC', 'DAI', 'BUSD', 'PYUSD']: return 1.0
+    try:
+        if tid:
+            sql = "SELECT price FROM sys_precios_activos WHERE traductor_id = %s ORDER BY last_update DESC LIMIT 1"
+            cursor.execute(sql, (tid['id'] if isinstance(tid, dict) else tid,))
+            row = cursor.fetchone()
+            if row: return float(row['price'] if isinstance(row, dict) else row[0])
+    except: pass
+    return 0.0
+
+# ==========================================================
+# SYNC ESTADO
+# Version 1.2
+# ==========================================================
+
+def obtener_sync(cursor,user_id,broker,endpoint):
+
+    sql="""
+    SELECT last_timestamp
+    FROM sys_sync_estado
+    WHERE user_id=%s AND broker=%s AND endpoint=%s
+    """
+
+    cursor.execute(sql,(user_id,broker,endpoint))
+    r=cursor.fetchone()
+
+    if r:
+        return r[0]
+
+    return 0
+
+
+def guardar_sync(cursor,user_id,broker,endpoint,timestamp):
+
+    sql="""
+    INSERT INTO sys_sync_estado
+    (user_id,broker,endpoint,last_timestamp)
+    VALUES(%s,%s,%s,%s)
+    ON DUPLICATE KEY UPDATE
+    last_timestamp=%s
+    """
+
+    cursor.execute(sql,(user_id,broker,endpoint,timestamp,timestamp))
+
+
+
+# ==========================================================
+# REGISTRO CONTABLE GLOBAL
+# Version 1.0
+# ==========================================================
+
+def registrar_transaccion_global(cursor, data):
+    # 1. 🛡️ OBTENEMOS EL ID DEL TRADUCTOR (Usando tu función de siempre)
+    res_traductor = obtener_traductor_id(cursor, data["broker"], data["asset"])
+    
+    # Valores por defecto por si el activo no está en el traductor
+    cuenta_tipo = "SPOT"
+    tipo_inv = "CRYPTO"
+    traductor_id = None
+
+    # 2. 🔍 BUSCAMOS ATRIBUTOS SIN TOCAR LA FUNCIÓN ORIGINAL
+    if res_traductor:
+        # Extraemos el ID ya sea que venga como dict o tupla
+        traductor_id = res_traductor['id'] if isinstance(res_traductor, dict) else res_traductor[0]
+        
+        # Hacemos una consulta rápida para traer la clasificación
+        sql_info = "SELECT categoria_producto, tipo_investment FROM sys_traductor_simbolos WHERE id = %s"
+        cursor.execute(sql_info, (traductor_id,))
+        info_extra = cursor.fetchone()
+        
+        if info_extra:
+            # categoria_producto mapea a cuenta_tipo (SPOT/FUTURES)
+            cuenta_tipo = info_extra['categoria_producto'] if isinstance(info_extra, dict) else info_extra[0]
+            # tipo_investment mapea a tipo_investment (CRYPTO/STOCK)
+            tipo_inv = info_extra['tipo_investment'] if isinstance(info_extra, dict) else info_extra[1]
+
+    # 3. 🆔 ID ÚNICO CON PREFIJO PARA CONGRUENCIA
+    # Esto evita que choque con los trades del motor 6.6.6.23
+    id_final = f"{data['user_id']}-CASH-{data['id_externo']}"
+    
+    sql = """
+    INSERT INTO transacciones_globales 
+    (id_externo, user_id, tipo_investment, cuenta_tipo, categoria, asset, 
+     traductor_id, monto_neto, fecha_utc, broker, raw_json_backup)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON DUPLICATE KEY UPDATE
+    monto_neto = VALUES(monto_neto),
+    raw_json_backup = VALUES(raw_json_backup)
+    """
+    
+    cursor.execute(sql, (
+        id_final,
+        data["user_id"],
+        tipo_inv,            # Dinámico del traductor
+        cuenta_tipo,         # Dinámico del traductor
+        data["tipo_evento"], # Ej: FUNDING_FEE, DEPOSIT
+        data["asset"],
+        traductor_id,
+        data["cantidad"],
+        data["fecha"],
+        data["broker"],
+        data.get("raw", "{}")
+    ))
+
+# ==========================================================
+# 📝 REGISTRO MAESTRO
+# ==========================================================
+def registrar_cashflow(cursor, data):
+    tid = obtener_traductor_id(cursor, data["broker"], data["asset"])
+    precio = obtener_precio_usd(cursor, tid, data["asset"])
+    valor_usd = float(data["cantidad"]) * precio
+
+    sql = """
+    INSERT INTO sys_cashflows (user_id, broker, tipo_evento, asset, cantidad, ticker_motor, valor_usd, fecha_utc, id_externo, raw_json)
+    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+    ON DUPLICATE KEY UPDATE raw_json=VALUES(raw_json), valor_usd=VALUES(valor_usd)
+    """
+    cursor.execute(sql, (data["user_id"], data["broker"], data["tipo_evento"], data["asset"], 
+                         data["cantidad"], data["ticker_motor"], valor_usd, data["fecha"], 
+                         data["id_externo"], data.get("raw", "{}")))
+     # REGISTRO CONTABLE
+    registrar_transaccion_global(cursor,data)
+
+# ==========================================================
+# RATE LIMIT
+# ==========================================================
+
+def rate_limit():
+
+    time.sleep(0.15)
+
+# ==========================================================
+# 🔌 BINANCE FUNCTIONS
+# ==========================================================
+def binance_sign(secret, query):
+    return hmac.new(secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+
+# ==========================================================
+# BINANCE INCOME
+# ==========================================================
+
+def binance_income(db,user_id,key,secret):
+
+    cursor=db.cursor()
+
+    endpoint="BINANCE_INCOME"
+
+    last_sync=obtener_sync(cursor,user_id,"BINANCE",endpoint)
+
+    base="https://fapi.binance.com/fapi/v1/income"
+
+    while True:
+
+        params={
+            "startTime":last_sync,
+            "limit":1000,
+            "timestamp":int(time.time()*1000)
+        }
+
+        query=urlencode(params)
+
+        sig=binance_sign(secret,query)
+
+        url=f"{base}?{query}&signature={sig}"
+
+        headers={"X-MBX-APIKEY":key}
+
+        r=requests.get(url,headers=headers).json()
+
+        if not r:
+            break
+
+        max_time=last_sync
+
+        for i in r:
+
+            ts=int(i["time"])
+
+            registrar_cashflow(cursor,{
+                "user_id":user_id,
+                "broker":"BINANCE",
+                "tipo_evento":i["incomeType"],
+                "asset":i["asset"],
+                "cantidad":float(i["income"]),
+                "ticker_motor":i.get("symbol"),
+                "valor_usd":0,
+                "fecha":time.strftime('%Y-%m-%d %H:%M:%S',time.gmtime(ts/1000)),
+                "id_externo":f"BN-INC-{i['tranId']}",
+                "raw":json.dumps(i)
+            })
+
+            if ts>max_time:
+                max_time=ts
+
+        db.commit()
+
+        guardar_sync(cursor,user_id,"BINANCE",endpoint,max_time)
+
+        last_sync=max_time+1
+
+        if len(r)<1000:
+            break
+
+        rate_limit()
+
+
+# ==========================================================
+# BINANCE DEPOSITS
+# Version 1.0
+# ==========================================================
+
+def binance_deposits(db,user_id,key,secret):
+
+    cursor=db.cursor()
+
+    endpoint="BINANCE_DEPOSIT"
+
+    last_sync=obtener_sync(cursor,user_id,"BINANCE",endpoint)
+
+    params={
+        "timestamp":int(time.time()*1000)
+    }
+
+    query=urlencode(params)
+
+    sig=binance_sign(secret,query)
+
+    url=f"https://api.binance.com/sapi/v1/capital/deposit/hisrec?{query}&signature={sig}"
+
+    headers={"X-MBX-APIKEY":key}
+
+    r=requests.get(url,headers=headers).json()
+
+    max_time=last_sync
+
+    for d in r:
+
+        ts=int(d["insertTime"])
+
+        registrar_cashflow(cursor,{
+            "user_id":user_id,
+            "broker":"BINANCE",
+            "tipo_evento":"DEPOSIT",
+            "asset":d["coin"],
+            "cantidad":float(d["amount"]),
+            "ticker_motor":None,
+            "fecha":time.strftime('%Y-%m-%d %H:%M:%S',time.gmtime(ts/1000)),
+            "id_externo":f"BN-DEP-{d['txId']}",
+            "raw":json.dumps(d)
+        })
+
+        if ts>max_time:
+            max_time=ts
+
+    db.commit()
+
+    guardar_sync(cursor,user_id,"BINANCE",endpoint,max_time)
+
+def binance_withdraw(db,user_id,key,secret):
+
+    cursor=db.cursor()
+
+    endpoint="BINANCE_WITHDRAW"
+
+    last_sync=obtener_sync(cursor,user_id,"BINANCE",endpoint)
+
+    params={
+        "timestamp":int(time.time()*1000)
+    }
+
+    query=urlencode(params)
+
+    sig=binance_sign(secret,query)
+
+    url=f"https://api.binance.com/sapi/v1/capital/withdraw/history?{query}&signature={sig}"
+
+    headers={"X-MBX-APIKEY":key}
+
+    r=requests.get(url,headers=headers).json()
+
+    for w in r:
+
+        registrar_cashflow(cursor,{
+            "user_id":user_id,
+            "broker":"BINANCE",
+            "tipo_evento":"WITHDRAW",
+            "asset":w["coin"],
+            "cantidad":float(w["amount"]),
+            "ticker_motor":None,
+            "valor_usd":0,
+            "fecha":w["applyTime"],
+            "id_externo":f"BN-WITH-{w['id']}",
+            "raw":json.dumps(w)
+        })
+
+    db.commit()
+
+def binance_dust_log(db, uid, key, secret):
+
+    cursor = db.cursor()
+
+    params = urlencode({
+        "timestamp": int(time.time()*1000)
+    })
+
+    url = f"https://api.binance.com/sapi/v1/asset/dribblet?{params}&signature={binance_sign(secret, params)}"
+
+    r = requests.get(url, headers={"X-MBX-APIKEY": key}).json()
+
+    if "userAssetDribblets" not in r:
+        return
+
+    for entry in r["userAssetDribblets"]:
+
+        fecha = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(entry["operateTime"]/1000))
+
+        trans_id = entry["operateTime"]
+
+        # SALIDAS
+        for detail in entry["userAssetDribbletDetails"]:
+
+            registrar_cashflow(cursor,{
+                "user_id": uid,
+                "broker": "BINANCE",
+                "tipo_evento": "DUST_OUT",
+                "asset": detail["fromAsset"],
+                "cantidad": -float(detail["amount"]),
+                "ticker_motor": None,
+                "fecha": fecha,
+                "id_externo": f"BN-DUST-{detail['transId']}-OUT",
+                "raw": json.dumps(detail)
+            })
+
+        # ENTRADA BNB
+        registrar_cashflow(cursor,{
+            "user_id": uid,
+            "broker": "BINANCE",
+            "tipo_evento": "DUST_IN",
+            "asset": "BNB",
+            "cantidad": float(entry["totalTransferedAmount"]),
+            "ticker_motor": None,
+            "fecha": fecha,
+            "id_externo": f"BN-DUST-{trans_id}-IN",
+            "raw": json.dumps(entry)
+        })
+
+    db.commit()
+
+
+def binance_staking_rewards(db, uid, key, secret):
+    cursor = db.cursor()
+    params = urlencode({"timestamp": int(time.time()*1000)})
+    url = f"https://api.binance.com/sapi/v1/lending/union/interestHistory?{params}&signature={binance_sign(secret, params)}"
+    r = requests.get(url, headers={"X-MBX-APIKEY": key}).json()
+    for item in r:
+        registrar_cashflow(cursor, {
+            "user_id": uid, "broker": "BINANCE", "tipo_evento": "STAKING_REWARD", "asset": item["asset"],
+            "cantidad": float(item["interest"]), "ticker_motor": None,
+            "fecha": time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(item["time"]/1000)),
+            "id_externo": f"BN-STK-{item['time']}-{item['asset']}", "raw": json.dumps(item)
+        })
+    db.commit()
+
+def binance_convert_history(db, uid, key, secret):
+
+    cursor = db.cursor()
+
+    ts = int(time.time()*1000)
+
+    params = urlencode({
+        "timestamp": ts,
+        "startTime": ts - (30*24*60*60*1000)
+    })
+
+    url = f"https://api.binance.com/sapi/v1/convert/tradeFlow?{params}&signature={binance_sign(secret, params)}"
+
+    r = requests.get(url, headers={"X-MBX-APIKEY": key}).json()
+
+    if "list" not in r:
+        return
+
+    for c in r["list"]:
+
+        fecha = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(c["createTime"]/1000))
+
+        order_id = c["orderId"]
+
+        # SALIDA
+        registrar_cashflow(cursor,{
+            "user_id": uid,
+            "broker": "BINANCE",
+            "tipo_evento": "CONVERT_OUT",
+            "asset": c["fromAsset"],
+            "cantidad": -float(c["fromAmount"]),
+            "ticker_motor": None,
+            "fecha": fecha,
+            "id_externo": f"BN-CONV-{order_id}-OUT",
+            "raw": json.dumps(c)
+        })
+
+        # ENTRADA
+        registrar_cashflow(cursor,{
+            "user_id": uid,
+            "broker": "BINANCE",
+            "tipo_evento": "CONVERT_IN",
+            "asset": c["toAsset"],
+            "cantidad": float(c["toAmount"]),
+            "ticker_motor": None,
+            "fecha": fecha,
+            "id_externo": f"BN-CONV-{order_id}-IN",
+            "raw": json.dumps(c)
+        })
+
+    db.commit()
+
+# ==========================================================
+# BINANCE TRANSFERS
+# Version 1.0
+# ==========================================================
+
+def binance_transfers(db,user_id,key,secret):
+
+    cursor=db.cursor()
+
+    endpoint="BINANCE_TRANSFER"
+
+    last_sync=obtener_sync(cursor,user_id,"BINANCE",endpoint)
+
+    params={
+        "timestamp":int(time.time()*1000)
+    }
+
+    query=urlencode(params)
+
+    sig=binance_sign(secret,query)
+
+    url=f"https://api.binance.com/sapi/v1/asset/transfer?{query}&signature={sig}"
+
+    headers={"X-MBX-APIKEY":key}
+
+    r=requests.get(url,headers=headers).json()
+
+    max_time=last_sync
+
+    if "rows" not in r:
+        return
+
+    for t in r["rows"]:
+
+        ts=int(t["timestamp"])
+
+        registrar_cashflow(cursor,{
+            "user_id":user_id,
+            "broker":"BINANCE",
+            "tipo_evento":"TRANSFER",
+            "asset":t["asset"],
+            "cantidad":float(t["amount"]),
+            "ticker_motor":None,
+            "fecha":time.strftime('%Y-%m-%d %H:%M:%S',time.gmtime(ts/1000)),
+            "id_externo":f"BN-TR-{t['tranId']}",
+            "raw":json.dumps(t)
+        })
+
+        if ts>max_time:
+            max_time=ts
+
+    db.commit()
+
+    guardar_sync(cursor,user_id,"BINANCE",endpoint,max_time)
+
+# ==========================================================
+# BINGX INCOME
+# ==========================================================
+
+def bingx_income(db,user_id,key,secret):
+
+    cursor=db.cursor()
+
+    endpoint="BINGX_INCOME"
+
+    last_sync=obtener_sync(cursor,user_id,"BINGX",endpoint)
+
+    base="https://open-api.bingx.com/openApi/swap/v2/user/income"
+
+    params={
+        "limit":100,
+        "timestamp":int(time.time()*1000)
+    }
+
+    query=urlencode(params)
+
+    sig=hmac.new(secret.encode(),query.encode(),hashlib.sha256).hexdigest()
+
+    url=f"{base}?{query}&signature={sig}"
+
+    headers=get_headers_bingx(key)
+
+    r=requests.get(url,headers=headers).json()
+
+    if r.get("code")==0:
+
+        for i in r["data"]:
+
+            ts=int(i["time"])
+
+            registrar_cashflow(cursor,{
+                "user_id":user_id,
+                "broker":"BINGX",
+                "tipo_evento":i["incomeType"],
+                "asset":i["asset"],
+                "cantidad":float(i["income"]),
+                "ticker_motor":i.get("symbol"),
+                "valor_usd":0,
+                "fecha":time.strftime('%Y-%m-%d %H:%M:%S',time.gmtime(ts/1000)),
+                "id_externo":f"BX-INC-{i['time']}-{i['asset']}",
+                "raw":json.dumps(i)
+            })
+
+            if ts>last_sync:
+                last_sync=ts
+
+    db.commit()
+
+    guardar_sync(cursor,user_id,"BINGX",endpoint,last_sync)
+
+
+def bingx_deposits(db,user_id,key,secret):
+
+    cursor=db.cursor()
+
+    endpoint="BINGX_DEPOSIT"
+
+    base="https://open-api.bingx.com/openApi/api/v3/capital/deposit/hisrec"
+
+    params={
+        "timestamp":int(time.time()*1000)
+    }
+
+    query=urlencode(params)
+
+    sig=hmac.new(secret.encode(),query.encode(),hashlib.sha256).hexdigest()
+
+    url=f"{base}?{query}&signature={sig}"
+
+    headers=get_headers_bingx(key)
+
+    r=requests.get(url,headers=headers).json()
+
+    if "data" not in r:
+        return
+
+    for d in r["data"]:
+
+        ts=int(d["insertTime"])
+
+        registrar_cashflow(cursor,{
+            "user_id":user_id,
+            "broker":"BINGX",
+            "tipo_evento":"DEPOSIT",
+            "asset":d["coin"],
+            "cantidad":float(d["amount"]),
+            "ticker_motor":None,
+            "fecha":time.strftime('%Y-%m-%d %H:%M:%S',time.gmtime(ts/1000)),
+            "id_externo":f"BX-DEP-{d['txId']}",
+            "raw":json.dumps(d)
+        })
+
+    db.commit()
+
+def bingx_withdraw(db,user_id,key,secret):
+
+    cursor=db.cursor()
+
+    base="https://open-api.bingx.com/openApi/api/v3/capital/withdraw/history"
+
+    params={
+        "timestamp":int(time.time()*1000)
+    }
+
+    query=urlencode(params)
+
+    sig=hmac.new(secret.encode(),query.encode(),hashlib.sha256).hexdigest()
+
+    url=f"{base}?{query}&signature={sig}"
+
+    headers=get_headers_bingx(key)
+
+    r=requests.get(url,headers=headers).json()
+
+    if "data" not in r:
+        return
+
+    for w in r["data"]:
+
+        registrar_cashflow(cursor,{
+            "user_id":user_id,
+            "broker":"BINGX",
+            "tipo_evento":"WITHDRAW",
+            "asset":w["coin"],
+            "cantidad":float(w["amount"]),
+            "ticker_motor":None,
+            "fecha":w["applyTime"],
+            "id_externo":f"BX-WITH-{w['id']}",
+            "raw":json.dumps(w)
+        })
+
+    db.commit()
+
+def bingx_transfers(db,user_id,key,secret):
+
+    cursor=db.cursor()
+
+    base="https://open-api.bingx.com/openApi/wallets/v1/capital/innerTransfer/records"
+
+    params={
+        "timestamp":int(time.time()*1000)
+    }
+
+    query=urlencode(params)
+
+    sig=hmac.new(secret.encode(),query.encode(),hashlib.sha256).hexdigest()
+
+    url=f"{base}?{query}&signature={sig}"
+
+    headers=get_headers_bingx(key)
+
+    r=requests.get(url,headers=headers).json()
+
+    if "data" not in r:
+        return
+
+    for t in r["data"]:
+
+        registrar_cashflow(cursor,{
+            "user_id":user_id,
+            "broker":"BINGX",
+            "tipo_evento":"TRANSFER",
+            "asset":t["coin"],
+            "cantidad":float(t["amount"]),
+            "ticker_motor":None,
+            "fecha":t["time"],
+            "id_externo":f"BX-TR-{t['id']}",
+            "raw":json.dumps(t)
+        })
+
+    db.commit()
+
+# ==========================================================
+# 🚀 EJECUCIÓN PRINCIPAL (COMPATIBILIDAD TOTAL v6.6.6.23)
+# ==========================================================
+def ejecutar_motor_financiero(db):
+    print(f"💎 MOTOR FINANCIERO v1.3.1 - AUDITORÍA DE FLUJOS")
+    
+    # Creamos el cursor en modo diccionario igual que en tu script original
+    cursor = db.cursor(dictionary=True)
+    
+    # USAMOS TU TABLA REAL: api_keys
+    sql = "SELECT user_id, api_key, api_secret, broker_name FROM api_keys WHERE status=1"
+    
+    try:
+        cursor.execute(sql)
+        usuarios = cursor.fetchall()
+        
+        for u in usuarios:
+            print(f">> PROCESANDO FLUJOS: User {u['user_id']} | {u['broker_name']}")
+
+            # Descifrado idéntico usando tu MASTER_KEY
+            k = descifrar_dato(u['api_key'], MASTER_KEY)
+            s = descifrar_dato(u['api_secret'], MASTER_KEY)
+
+            if not k or not s:
+                print(f"    [!] Error: No se pudieron descifrar las llaves.")
+                continue
+
+            # Ruteo por Broker
+            broker = u['broker_name'].upper()
+
+            if broker == "BINANCE":
+                # Llamadas a las funciones que el equipo financiero creó
+                binance_income(db, u['user_id'], k, s)
+                binance_deposits(db, u['user_id'], k, s)
+                binance_withdraw(db, u['user_id'], k, s)
+                binance_convert_history(db, u['user_id'], k, s)
+                binance_dust_log(db, u['user_id'], k, s)
+                binance_staking_rewards(db, u['user_id'], k, s)
+                binance_transfers(db, u['user_id'], k, s)
+
+            elif broker == "BINGX":
+                bingx_income(db, u['user_id'], k, s)
+                bingx_deposits(db, u['user_id'], k, s)
+                bingx_withdraw(db, u['user_id'], k, s)
+                bingx_transfers(db, u['user_id'], k, s)
+
+        db.commit()
+
+    except Exception as e:
+        print(f"    [CRITICAL] Error en ejecución: {e}")
