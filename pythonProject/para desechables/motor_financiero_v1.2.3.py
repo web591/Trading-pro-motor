@@ -319,134 +319,48 @@ def binance_withdraw(db, user_id, key, secret):
 
 def binance_dust_log(db, uid, key, secret):
     cursor = db.cursor(dictionary=True)
-    endpoint = "BINANCE_DUST"
-    last_sync = obtener_sync(cursor, uid, "BINANCE", endpoint)
-    
-    # Si no hay sync, empezamos en Octubre 2021
-    start_ts = int(last_sync + 1) if last_sync > 0 else 1633046400000 
-    end_now = int(time.time() * 1000)
-    
-    print(f"    [+] {endpoint}: Iniciando escaneo histórico desde 2021...")
+    print(f"    [+] BINANCE_DUST: Procesando conversiones a BNB...")
+    params = urlencode({"timestamp": int(time.time()*1000)})
+    url = f"https://api.binance.com/sapi/v1/asset/dribblet?{params}&signature={binance_sign(secret, params)}"
+    r = requests.get(url, headers={"X-MBX-APIKEY": key}).json()
+    if "userAssetDribblets" not in r: return
 
-    while start_ts < end_now:
-        # Usamos bloques de 90 días para Dust (es más estable que 30)
-        chunk_end = start_ts + (90 * 24 * 60 * 60 * 1000)
-        if chunk_end > end_now: chunk_end = end_now
-        
-        fecha_h = time.strftime('%Y-%m-%d', time.gmtime(start_ts/1000))
-        print(f"        [..] Dust: Escaneando desde {fecha_h}...", end="\r")
-        
-        params = {
-            "startTime": start_ts,
-            "endTime": chunk_end,
-            "timestamp": int(time.time()*1000)
-        }
-        
-        query = urlencode(params)
-        signature = binance_sign(secret, query)
-        url = f"https://api.binance.com/sapi/v1/asset/dribblet?{query}&signature={signature}"
-        
-        try:
-            r = requests.get(url, headers={"X-MBX-APIKEY": key}).json()
-            
-            if "userAssetDribblets" in r and r["userAssetDribblets"]:
-                count_bloque = 0
-                for entry in r["userAssetDribblets"]:
-                    ts = int(entry["operateTime"])
-                    fecha = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts/1000))
-                    
-                    if "userAssetDribbletDetails" in entry:
-                        for detail in entry["userAssetDribbletDetails"]:
-                            asset_s = detail["fromAsset"]
-                            registrar_cashflow(cursor, {
-                                "user_id": uid, "broker": "BINANCE", "tipo_evento": "DUST_OUT",
-                                "asset": asset_s, "cantidad": -float(detail["amount"]), 
-                                "ticker_motor": None, "fecha": fecha, 
-                                "id_externo": f"BN-DUST-{detail['transId']}-{asset_s}", 
-                                "raw": json.dumps(detail)
-                            })
-                    
-                    asset_e = entry.get("operatingAsset", "BNB")
-                    registrar_cashflow(cursor, {
-                        "user_id": uid, "broker": "BINANCE", "tipo_evento": "DUST_IN",
-                        "asset": asset_e, "cantidad": float(entry["totalTransferedAmount"]), 
-                        "ticker_motor": None, "fecha": fecha, 
-                        "id_externo": f"BN-DUST-{ts}-IN", 
-                        "raw": json.dumps(entry)
-                    })
-                    count_bloque += 1
-                
-                if count_bloque > 0:
-                    print(f"\n        [OK] Bloque {fecha_h}: {count_bloque} conversiones encontradas.")
-
-            # Guardamos progreso del bloque
-            guardar_sync(cursor, uid, "BINANCE", endpoint, chunk_end)
-            db.commit()
-            
-            start_ts = chunk_end + 1
-            rate_limit()
-
-        except Exception as e:
-            print(f"\n    [!] Error en bloque Dust: {e}")
-            break
-            
-    print(f"\n    [OK] {endpoint}: Historial completo sincronizado.")
+    for entry in r["userAssetDribblets"]:
+        fecha = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(entry["operateTime"]/1000))
+        for detail in entry["userAssetDribbletDetails"]:
+            registrar_cashflow(cursor, {
+                "user_id": uid, "broker": "BINANCE", "tipo_evento": "DUST_OUT",
+                "asset": detail["fromAsset"], "cantidad": -float(detail["amount"]), "ticker_motor": None,
+                "fecha": fecha, "id_externo": f"BN-DUST-{detail['transId']}-OUT", "raw": json.dumps(detail)
+            })
+        registrar_cashflow(cursor, {
+            "user_id": uid, "broker": "BINANCE", "tipo_evento": "DUST_IN",
+            "asset": "BNB", "cantidad": float(entry["totalTransferedAmount"]), "ticker_motor": None,
+            "fecha": fecha, "id_externo": f"BN-DUST-{entry['operateTime']}-IN", "raw": json.dumps(entry)
+        })
+    print(f"    [OK] BINANCE_DUST: Finalizado.")
 
 def binance_convert_history(db, uid, key, secret):
     cursor = db.cursor(dictionary=True)
-    endpoint = "BINANCE_CONVERT"
-    last_sync = obtener_sync(cursor, uid, "BINANCE", endpoint)
-    
-    start_ts = last_sync + 1 if last_sync > 0 else 1633046400000
-    end_now = int(time.time() * 1000)
-    
-    print(f"    [+] {endpoint}: Iniciando escaneo histórico por bloques...")
-
-    while start_ts < end_now:
-        chunk_end = start_ts + (30 * 24 * 60 * 60 * 1000)
-        if chunk_end > end_now: chunk_end = end_now
-        
-        # MOSTRAR PROGRESO EN CONSOLA
-        fecha_h = time.strftime('%Y-%m-%d', time.gmtime(start_ts/1000))
-        print(f"        [..] Convert: Escaneando desde {fecha_h}...", end="\r")
-        
-        params = {
-            "timestamp": int(time.time()*1000),
-            "startTime": start_ts,
-            "endTime": chunk_end,
-            "limit": 1000
-        }
-        
-        query = urlencode(params)
-        url = f"https://api.binance.com/sapi/v1/convert/tradeFlow?{query}&signature={binance_sign(secret, query)}"
-        
-        try:
-            r = requests.get(url, headers={"X-MBX-APIKEY": key}).json()
-            if "list" in r and r["list"]:
-                for c in r["list"]:
-                    ts = int(c["createTime"])
-                    fecha = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts/1000))
-                    registrar_cashflow(cursor, {
-                        "user_id": uid, "broker": "BINANCE", "tipo_evento": "CONVERT_OUT",
-                        "asset": c["fromAsset"], "cantidad": -float(c["fromAmount"]), "ticker_motor": None,
-                        "fecha": fecha, "id_externo": f"BN-CONV-{c['orderId']}-OUT", "raw": json.dumps(c)
-                    })
-                    registrar_cashflow(cursor, {
-                        "user_id": uid, "broker": "BINANCE", "tipo_evento": "CONVERT_IN",
-                        "asset": c["toAsset"], "cantidad": float(c["toAmount"]), "ticker_motor": None,
-                        "fecha": fecha, "id_externo": f"BN-CONV-{c['orderId']}-IN", "raw": json.dumps(c)
-                    })
-            
-            guardar_sync(cursor, uid, "BINANCE", endpoint, chunk_end)
-            db.commit()
-            start_ts = chunk_end + 1
-            rate_limit()
-            
-        except Exception as e:
-            print(f"\n    [!] Error en bloque Convert: {e}")
-            break
-
-    print(f"\n    [OK] {endpoint}: Historial actualizado.")
+    print(f"    [+] BINANCE_CONVERT: Sincronizando (30 días)...")
+    ts = int(time.time()*1000)
+    params = urlencode({"timestamp": ts, "startTime": ts - (30*24*60*60*1000)})
+    url = f"https://api.binance.com/sapi/v1/convert/tradeFlow?{params}&signature={binance_sign(secret, params)}"
+    r = requests.get(url, headers={"X-MBX-APIKEY": key}).json()
+    if "list" not in r: return
+    for c in r["list"]:
+        fecha = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(c["createTime"]/1000))
+        registrar_cashflow(cursor, {
+            "user_id": uid, "broker": "BINANCE", "tipo_evento": "CONVERT_OUT",
+            "asset": c["fromAsset"], "cantidad": -float(c["fromAmount"]), "ticker_motor": None,
+            "fecha": fecha, "id_externo": f"BN-CONV-{c['orderId']}-OUT", "raw": json.dumps(c)
+        })
+        registrar_cashflow(cursor, {
+            "user_id": uid, "broker": "BINANCE", "tipo_evento": "CONVERT_IN",
+            "asset": c["toAsset"], "cantidad": float(c["toAmount"]), "ticker_motor": None,
+            "fecha": fecha, "id_externo": f"BN-CONV-{c['orderId']}-IN", "raw": json.dumps(c)
+        })
+    print(f"    [OK] BINANCE_CONVERT: Finalizado.")
 
 def binance_transfers(db, user_id, key, secret):
     cursor = db.cursor(dictionary=True)
@@ -469,81 +383,59 @@ def binance_transfers(db, user_id, key, secret):
 def binance_mining(db, user_id, key, secret):
     cursor = db.cursor(dictionary=True)
     endpoint = "BINANCE_MINING"
+    
+    # Lista de tus cuentas de minería (Worker Names)
     mining_accounts = ["EppETHJafa", "EthJafa01"]
-    algoritmos = ["etchash", "ethash"] 
     
     last_sync = obtener_sync(cursor, user_id, "BINANCE", endpoint)
     
-    # Si no hay sync, empezamos desde el 1 de enero de 2023
-    start_ts = last_sync + 1 if last_sync > 0 else 1672531200000 
-    end_now = int(time.time() * 1000)
+    # Si es la primera vez, retrocedemos 30 días, si no, desde el último sync
+    actual_start = last_sync + 1 if last_sync > 0 else int((time.time() - 30*24*3600)*1000)
     
-    print(f"\n    [+] {endpoint}: Iniciando escaneo histórico por bloques...")
+    print(f"    [+] {endpoint}: Verificando pagos de Pool...")
     
-    total_nuevos = 0
+    max_ts_global = last_sync
+    count = 0
 
-    while start_ts < end_now:
-        chunk_end = start_ts + 2592000000 # Bloques de 30 días
-        if chunk_end > end_now: chunk_end = end_now
+    for account in mining_accounts:
+        params = {
+            "algo": "ethash", 
+            "userName": account,
+            "timestamp": int(time.time()*1000)
+        }
         
-        fecha_inicio_h = time.strftime('%Y-%m-%d', time.gmtime(start_ts/1000))
-        fecha_fin_h = time.strftime('%Y-%m-%d', time.gmtime(chunk_end/1000))
+        query = urlencode(params)
+        url = f"https://api.binance.com/sapi/v1/mining/payment/list?{query}&signature={binance_sign(secret, query)}"
         
-        # Print de control de bloque
-        print(f"        [..] Revisando: {fecha_inicio_h} al {fecha_fin_h}...", end=" ")
-
-        encontrados_en_bloque = 0
-
-        for account in mining_accounts:
-            for algo in algoritmos:
-                params = {
-                    "algo": algo, 
-                    "userName": account,
-                    "startTime": start_ts, 
-                    "endTime": chunk_end,
-                    "timestamp": int(time.time()*1000)
-                }
-                query = urlencode(params)
-                signature = binance_sign(secret, query)
-                url = f"https://api.binance.com/sapi/v1/mining/payment/list?{query}&signature={signature}"
-                
-                try:
-                    r = requests.get(url, headers={"X-MBX-APIKEY": key}, timeout=10).json()
+        try:
+            r = requests.get(url, headers={"X-MBX-APIKEY": key}).json()
+            
+            if r.get("code") == 0 and "data" in r and "accountProfits" in r["data"]:
+                for p in r["data"]["accountProfits"]:
+                    ts = int(p["time"])
+                    if ts <= last_sync: continue
                     
-                    if r.get("code") == 0 and "data" in r and "accountProfits" in r["data"]:
-                        for p in r["data"]["accountProfits"]:
-                            ts = int(p["time"])
-                            asset_p = p["coinName"]
-                            monto = float(p.get("dayProfit", p.get("amount", 0)))
-                            
-                            registrar_cashflow(cursor, {
-                                "user_id": user_id, "broker": "BINANCE",
-                                "tipo_evento": "MINING_PAYMENT", "asset": asset_p,
-                                "cantidad": monto,
-                                "ticker_motor": f"POOL-{account}-{algo}",
-                                "fecha": time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts/1000)),
-                                "id_externo": f"BN-MINE-{account}-{ts}-{asset_p}",
-                                "raw": json.dumps(p)
-                            })
-                            encontrados_en_bloque += 1
-                            total_nuevos += 1
-                except Exception as e:
-                    print(f"\n        [!] Error en petición API: {e}")
-        
-        # Reporte visual del bloque al terminar las sub-consultas
-        if encontrados_en_bloque > 0:
-            print(f" -> ¡OK! ({encontrados_en_bloque} pagos)")
-        else:
-            print(" -> (vacío)")
+                    registrar_cashflow(cursor, {
+                        "user_id": user_id,
+                        "broker": "BINANCE",
+                        "tipo_evento": "MINING_PAYMENT",
+                        "asset": p["coinName"],
+                        "cantidad": float(p["dayProfit"]), # En minería se usa dayProfit o amount
+                        "ticker_motor": f"POOL-{account}",
+                        "fecha": time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts/1000)),
+                        "id_externo": f"BN-MINE-{account}-{ts}", # ID Único por cuenta y tiempo
+                        "raw": json.dumps(p)
+                    })
+                    
+                    if ts > max_ts_global: max_ts_global = ts
+                    count += 1
+        except Exception as e:
+            print(f"    [!] Error minando cuenta {account}: {e}")
 
-        # Guardar progreso y avanzar
-        guardar_sync(cursor, user_id, "BINANCE", endpoint, chunk_end)
-        db.commit()
-        
-        start_ts = chunk_end + 1
-        time.sleep(0.15) # Pausa estratégica para no ser baneado
-
-    print(f"    [OK] {endpoint}: Finalizado. Total histórico: {total_nuevos} registros.")
+    if max_ts_global > last_sync:
+        guardar_sync(cursor, user_id, "BINANCE", endpoint, max_ts_global)
+    
+    print(f"    [OK] {endpoint}: {count} nuevos pagos de minería.")
 
 # ==========================================================
 # 🔌 BINGX FUNCTIONS
@@ -617,7 +509,7 @@ def bingx_withdraw(db, user_id, key, secret):
 # ==========================================================
 def ejecutar_motor_financiero(db):
     print(f"\n{'='*60}")
-    print(f"💎 MOTOR FINANCIERO v1.2.7 - AUDITORÍA Y DIVIDENDOS")
+    print(f"💎 MOTOR FINANCIERO v1.2.3 - AUDITORÍA Y DIVIDENDOS")
     print(f"{'='*60}")
     
     cursor = db.cursor(dictionary=True)
@@ -647,7 +539,7 @@ def ejecutar_motor_financiero(db):
                 binance_withdraw(db, u['user_id'], k, s)
                 binance_convert_history(db, u['user_id'], k, s)
                 binance_dust_log(db, u['user_id'], k, s)
-                # binance_transfers(db, u['user_id'], k, s)
+                binance_transfers(db, u['user_id'], k, s)
 
             elif broker == "BINGX":
                 bingx_income(db, u['user_id'], k, s)
