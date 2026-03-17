@@ -475,18 +475,21 @@ def binance_mining(db, user_id, key, secret):
     
     last_sync = obtener_sync(cursor, user_id, "BINANCE", endpoint)
     
+    # Si no hay sync, intentamos ir atrás (Binance suele limitar a 90 días en este endpoint)
     if last_sync == 0:
         actual_start = int((time.time() - 90*24*3600)*1000)
-        print(f"    [+] {endpoint}: Escaneo histórico profundo (90 días)...")
+        print(f"    [+] {endpoint}: Escaneo histórico (Límite API 90 días)...")
     else:
         actual_start = last_sync + 1
-        print(f"    [+] {endpoint}: Verificando desde {time.strftime('%Y-%m-%d', time.gmtime(actual_start/1000))}...")
+        print(f"    [+] {endpoint}: Verificando nuevos desde {time.strftime('%Y-%m-%d', time.gmtime(actual_start/1000))}...")
     
     max_ts_global = last_sync
     count = 0
 
     for account in mining_accounts:
         for algo in algoritmos:
+            # Nota: La API de minería a veces ignora el startTime y solo da los últimos 
+            # por eso procesamos siempre y filtramos con el if ts > last_sync
             params = {
                 "algo": algo, 
                 "userName": account,
@@ -503,11 +506,13 @@ def binance_mining(db, user_id, key, secret):
                 if r.get("code") == 0 and "data" in r and "accountProfits" in r["data"]:
                     for p in r["data"]["accountProfits"]:
                         ts = int(p["time"])
+                        
+                        # Solo procesamos si es más nuevo que lo que tenemos
                         if ts <= last_sync: continue
                         
-                        # --- SOLUCIÓN AL ERROR 'dayProfit' ---
-                        # Intentamos obtener 'dayProfit', si no 'amount', si no 0.0
-                        cantidad = p.get("dayProfit", p.get("amount", 0.0))
+                        # --- CORRECCIÓN IDENTIFICADA EN DEBUG ---
+                        # Intentamos 'profitAmount', luego 'dayProfit', luego 'amount'
+                        cantidad = p.get("profitAmount", p.get("dayProfit", p.get("amount", 0.0)))
                         
                         registrar_cashflow(cursor, {
                             "user_id": user_id,
@@ -529,9 +534,9 @@ def binance_mining(db, user_id, key, secret):
 
     if max_ts_global > last_sync:
         guardar_sync(cursor, user_id, "BINANCE", endpoint, max_ts_global)
-        db.commit() # Aseguramos el commit
+        db.commit()
     
-    print(f"    [OK] {endpoint}: {count} nuevos pagos detectados.")
+    print(f"    [OK] {endpoint}: {count} nuevos pagos registrados correctamente.")
 
 # ==========================================================
 # 🔌 BINGX FUNCTIONS
