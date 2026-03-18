@@ -143,6 +143,6 @@ def procesar_csv_ada(nombre_archivo, user_id, tipo_mercado):
 if __name__ == "__main__":
     ID_USUARIO = 6
     # Asegúrate de estar en la carpeta correcta
-    #procesar_csv_ada('trades_POLUSDT.csv', ID_USUARIO, 'SPOT')
-    procesar_csv_ada('DoneUM_ETCUSDT.csv', ID_USUARIO, 'UM_FUTURES')
+    procesar_csv_ada('trades_VARIOSUSDT.csv', ID_USUARIO, 'SPOT')
+    #procesar_csv_ada('DoneUM_ETCUSDT.csv', ID_USUARIO, 'UM_FUTURES')
     #procesar_csv_ada('DoneCM_ETCUSD1_PERP.csv', ID_USUARIO, 'CM_FUTURES')
