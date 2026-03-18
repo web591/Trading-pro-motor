@@ -8,10 +8,10 @@ from datetime import datetime
 # ⚙️ CONFIGURACIÓN DE BASE DE DATOS (Pon tus datos aquí)
 # ==========================================================
 DB_CONFIG = {
-    'host': '195.35.61.47',
-    'user': 'u800112681_userdashboard',
-    'password': 'Dash434377a.board',  # <--- Pon aquí tu pass real
-    'database': 'u800112681_dashboard',
+    'host': 'localhost',
+    'user': 'root',
+    'password': '',
+    'database': 'u800112681_dashboard'
 }
 
 def buscar_traductor_id(cursor, symbol, broker):
