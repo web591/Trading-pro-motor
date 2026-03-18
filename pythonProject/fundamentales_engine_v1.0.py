@@ -1,3 +1,5 @@
+# Version 1.0
+
 import mysql.connector
 import requests
 import yfinance as yf
@@ -114,5 +116,20 @@ def motor_actualizacion_activos():
     cursor.close()
     conn.close()
 
+
+# ==========================================================
+# BUCLE HORARIO
+# ==========================================================
 if __name__ == "__main__":
-    motor_actualizacion_activos()
+    
+    while True:
+
+        print("\n================================================")
+        print("INICIANDO CICLO DEL MOTOR DE ACTIVOS")
+        print("================================================")
+
+        motor_actualizacion_activos()
+
+        print("\nCiclo terminado. Esperando 1 hora...")
+        
+        time.sleep(3600)
