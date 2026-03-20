@@ -1,23 +1,34 @@
 import sys
 import os
 
-# 1. PREPARACIÓN: Inyectamos config ANTES de importar el motor
-try:
-    import config_cloud
-    sys.modules['config'] = config_cloud
-    print("✅ [LOADER] Configuración inyectada correctamente.")
-except ImportError:
-    print("❌ [LOADER] No se encontró el archivo config_cloud.py")
-    sys.exit(1)
+# 1. CREAR EL ARCHIVO CONFIG.PY FÍSICAMENTE PARA ENGAÑAR AL MOTOR
+config_content = f"""
+import os
+DB_CONFIG = {{
+    'host': '{os.getenv('DB_HOST')}',
+    'user': '{os.getenv('DB_USER')}',
+    'password': '{os.getenv('DB_PASS')}',
+    'database': '{os.getenv('DB_NAME')}',
+    'port': int('{os.getenv('DB_PORT', 3306)}')
+}}
+FINNHUB_KEY = '{os.getenv('FINNHUB_KEY')}'
+ALPHA_VANTAGE_KEY = '{os.getenv('ALPHA_VANTAGE_KEY')}'
+ENCRYPTION_KEY = '{os.getenv('ENCRYPTION_KEY')}'
+"""
 
-# 2. EJECUCIÓN: Ahora sí traemos el motor
+with open("config.py", "w") as f:
+    f.write(config_content)
+
+print("✅ [LOADER] Archivo config.py generado dinámicamente.")
+
+# 2. EJECUCIÓN DEL MOTOR
 try:
     import PRICE_SYNC_V1_03 as m
     print("🚀 [LOADER] Motor cargado. Iniciando actualización...")
     m.actualizar_precios()
-    print("✅ [LOADER] Proceso finalizado.")
+    print("✅ [LOADER] Proceso finalizado exitosamente.")
 except Exception as e:
-    print(f"❌ [ERROR CRÍTICO]: {str(e)}")
+    print(f"❌ [ERROR]: {str(e)}")
     import traceback
-    traceback.print_exc() # Esto nos dirá la línea exacta del error en GitHub
+    traceback.print_exc()
     sys.exit(1)
