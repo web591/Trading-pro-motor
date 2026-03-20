@@ -3,7 +3,8 @@
 import sys
 import config_cloud as config
 sys.modules['config'] = config
-import PRICE_SYNC_V1_03 as m
+# Importamos usando __import__ porque el nombre tiene puntos
+m = __import__('PRICE_SYNC_V1.03') 
 
 print("🚀 [CLOUD] Iniciando actualización de precios...")
 m.actualizar_precios()

@@ -3,9 +3,10 @@
 import sys
 import config_cloud as config
 sys.modules['config'] = config
-import CÓDIGO_MAESTRO_V2_23 as m
+m = __import__('CÓDIGO MAESTRO V2.23')
 
 print("🚀 [CLOUD] Iniciando búsqueda de nuevos activos...")
-# Ejecuta un ciclo del maestro
-m.procesar_tareas_pendientes() if hasattr(m, 'procesar_tareas_pendientes') else print("⚠️ No se halló función principal")
+# El maestro no tiene una función simple, ejecutamos su lógica de una vez
+if hasattr(m, 'bucle_operativo'):
+    m.bucle_operativo() 
 print("✅ Proceso terminado.")

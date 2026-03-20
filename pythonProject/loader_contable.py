@@ -3,9 +3,12 @@
 import sys
 import config_cloud as config
 sys.modules['config'] = config
-import motor_saldos_v6_6_6_24 as m
+m = __import__('motor_saldos_v6.6.6.24')
 
 print("🚀 [CLOUD] Iniciando motor de saldos y posiciones...")
-# Ejecuta la función principal de tu motor de saldos
-m.ejecutar_control_saldos() if hasattr(m, 'ejecutar_control_saldos') else print("⚠️ No se halló función principal")
+# Buscamos la función principal. Si no existe main, no hace nada.
+if hasattr(m, 'main'):
+    m.main()
+else:
+    print("⚠️ No se halló función 'main' en el motor de saldos.")
 print("✅ Proceso terminado.")
