@@ -5,6 +5,7 @@ import yfinance as yf
 import mysql.connector
 from datetime import datetime
 from config import FINNHUB_KEY, DB_CONFIG, ALPHA_VANTAGE_KEY
+import os
 
 # ==========================================================
 # 🚩 CONFIGURACIÓN
@@ -344,124 +345,113 @@ def validar_tarea_existente(conn, id_tarea, underlying_consulta, tipo_investment
         cur.close()
 
 # ==========================================================
-# 🚀 ORQUESTADOR V2.23 - LIMPIEZA DE PREFIJOS + CACHE
+# 🚀 ORQUESTADOR V2.23 - LÓGICA DE CICLO ÚNICO
 # ==========================================================
-def bucle_operativo():
-    print("💎 MOTOR MAESTRO V2.23 - MULTIUSUARIO ONLINE (EARN-CLEANER ENABLED)")
-    conn = None
-    while True:
-        try:
-            if conn is None or not conn.is_connected():
-                conn = mysql.connector.connect(**DB_CONFIG)
+def ejecutar_un_ciclo_maestro(conn):
+    """
+    Esta función contiene la lógica exacta que tenías en tu bucle, 
+    pero preparada para ejecutarse una sola vez por llamado.
+    """
+    try:
+        # 1. Mantenimiento (Limpieza cada tanto)
+        if int(time.time()) % 300 == 0:
+            limpiar_resultados_antiguos(conn)   
 
-            if int(time.time()) % 300 == 0:
-                limpiar_resultados_antiguos(conn)   
+        cur = conn.cursor(dictionary=True, buffered=True)
+        # Buscamos la tarea pendiente
+        cur.execute("SELECT id, ticker FROM sys_simbolos_buscados WHERE status IN ('pendiente','encontrado') LIMIT 1")
+        tarea = cur.fetchone()
+        cur.close()
 
-            cur = conn.cursor(dictionary=True, buffered=True)
-            cur.execute("SELECT id, ticker FROM sys_simbolos_buscados WHERE status IN ('pendiente','encontrado') LIMIT 1")
-            tarea = cur.fetchone()
-            cur.close()
+        if tarea:
+            id_tarea = tarea['id']
+            ticker_raw = tarea['ticker'].upper().strip()
 
-            if tarea:
-                id_tarea = tarea['id']
-                ticker_raw = tarea['ticker'].upper().strip()
+            # --- 🧠 LÓGICA DE LIMPIEZA V2.23 ---
+            tk_busqueda = ticker_raw
+            if ticker_raw.startswith("LD") and len(ticker_raw) > 2:
+                tk_busqueda = ticker_raw[2:]
+            elif ticker_raw.startswith("STK") and len(ticker_raw) > 3:
+                tk_busqueda = ticker_raw[3:]
 
-                # --- 🧠 LÓGICA DE LIMPIEZA V2.23 ---
-                tk_busqueda = ticker_raw
-                if ticker_raw.startswith("LD") and len(ticker_raw) > 2:
-                    tk_busqueda = ticker_raw[2:]
-                elif ticker_raw.startswith("STK") and len(ticker_raw) > 3:
-                    tk_busqueda = ticker_raw[3:]
-                # -----------------------------------
-
-                # Marcar como procesando
-                cur_upd = conn.cursor()
-                cur_upd.execute("UPDATE sys_simbolos_buscados SET status = 'procesando' WHERE id = %s", (id_tarea,))
-                conn.commit()
-                cur_upd.close()
-                
-                # Reportar limpieza si ocurrió
-                if tk_busqueda != ticker_raw:
-                    print(f"\n🎯 PROCESANDO: {ticker_raw} -> Limpiado a: {tk_busqueda} (ID: {id_tarea})")
-                else:
-                    print(f"\n🎯 PROCESANDO: {tk_busqueda} (ID: {id_tarea})")
-
-                # ==========================================================
-                # 🔹 DETERMINAR UNDERLYING Y TRADUCTOR_ID (Usando tk_busqueda)
-                # ==========================================================
-                cur_u = conn.cursor(dictionary=True)
-                cur_u.execute("""
-                    SELECT id, underlying 
-                    FROM sys_traductor_simbolos 
-                    WHERE underlying = %s 
-                    LIMIT 1
-                """, (tk_busqueda,))
-
-                row = cur_u.fetchone()
-                if row:
-                    underlying_consulta = row["underlying"].upper()
-                    trad_id = row["id"]
-                else:
-                    underlying_consulta = tk_busqueda.upper()
-                    trad_id = None
-                cur_u.close()
-
-                # El resto del código (Memoria Global e Interrogación de mercados) 
-                # ya usará automáticamente 'tk_busqueda' y 'underlying_consulta'
-
-
-                # ==========================================================
-                # 🔹 MEMORIA GLOBAL
-                # ==========================================================
-                cur_cache = conn.cursor()
-                cur_cache.execute(
-                    "SELECT 1 FROM sys_busqueda_resultados WHERE underlying = %s LIMIT 1",
-                    (underlying_consulta,)
-                )
-                cache_hit = cur_cache.fetchone()
-                cur_cache.close()
-
-                if cache_hit:
-                    print(f"🧠 MEMORIA GLOBAL: {underlying_consulta} ya descubierto. Reutilizando catálogo...")
-                    cur_mem = conn.cursor(dictionary=True)
-                    cur_mem.execute("SELECT motor, ticker, precio, info, nombre_comun, tipo_investment FROM sys_busqueda_resultados WHERE underlying = %s AND fecha_hallazgo >= NOW() - INTERVAL 24 HOUR LIMIT 20", (underlying_consulta,))
-                    existentes = cur_mem.fetchall()
-                    cur_mem.close()
-                    hallazgos_mem = [{"Motor": f['motor'], "Ticker": f['ticker'], "Nombre": f['nombre_comun'], "Precio": f['precio'], "Info": f['info'], "Tipo": f['tipo_investment']}   for f in existentes]
-                    # 🔹 Guardado usando memoria + actualización traductor_id aunque no haya hallazgos
-                    guardar_en_resultados_db(conn, hallazgos_mem, id_tarea, tk_busqueda, underlying_consulta)
-                    # Si no hay hallazgos_mem, aun así se actualiza traductor_id
-                    if not hallazgos_mem:
-                        cur_tid = conn.cursor()
-                        cur_tid.execute("UPDATE sys_simbolos_buscados SET traductor_id = %s, status='validar' WHERE id = %s", (trad_id, id_tarea))
-                        conn.commit()
-                        cur_tid.close()
-                        print(f"🧠 Traductor ID actualizado a {trad_id} (sin hallazgos)")
-                else:
-                    print(f"🔍 Interrogando mercados para {tk_busqueda}...")
-                    consolidado = []
-                    motores = [("Binance", mapeo_binance), ("BingX", mapeo_bingx), ("Yahoo", mapeo_yahoo), ("Finnhub", mapeo_finnhub), ("AlphaVantage", mapeo_alpha)]
-                    for nombre, funcion in motores:
-                        try:
-                            res = funcion(tk_busqueda)
-                            if res: consolidado.extend(res)
-                        except: continue
-                    # 🔹 Guardado final, maneja sin hallazgos y actualiza traductor_id siempre
-                    guardar_en_resultados_db(conn, consolidado, id_tarea, tk_busqueda, underlying_consulta)
-                    if not consolidado:
-                        cur_tid2 = conn.cursor()
-                        cur_tid2.execute("UPDATE sys_simbolos_buscados SET traductor_id = %s, status='validar' WHERE id = %s", (trad_id, id_tarea))
-                        conn.commit()
-                        cur_tid2.close()
-                        print(f"🧠 Traductor ID actualizado a {trad_id} (sin hallazgos)")
-
+            # Marcar como procesando
+            cur_upd = conn.cursor()
+            cur_upd.execute("UPDATE sys_simbolos_buscados SET status = 'procesando' WHERE id = %s", (id_tarea,))
+            conn.commit()
+            cur_upd.close()
+            
+            if tk_busqueda != ticker_raw:
+                print(f"\n🎯 PROCESANDO: {ticker_raw} -> Limpiado a: {tk_busqueda} (ID: {id_tarea})")
             else:
-                # No hay tareas pendientes
-                print(".", end="", flush=True)
-                time.sleep(10)
-        except Exception as e:
-            print(f"⚠️ Error Crítico en Bucle: {e}")
-            time.sleep(5)
+                print(f"\n🎯 PROCESANDO: {tk_busqueda} (ID: {id_tarea})")
 
+            # --- DETERMINAR UNDERLYING ---
+            cur_u = conn.cursor(dictionary=True)
+            cur_u.execute("SELECT id, underlying FROM sys_traductor_simbolos WHERE underlying = %s LIMIT 1", (tk_busqueda,))
+            row = cur_u.fetchone()
+            underlying_consulta = row["underlying"].upper() if row else tk_busqueda.upper()
+            trad_id = row["id"] if row else None
+            cur_u.close()
+
+            # --- MEMORIA GLOBAL / INTERROGACIÓN ---
+            cur_cache = conn.cursor()
+            cur_cache.execute("SELECT 1 FROM sys_busqueda_resultados WHERE underlying = %s LIMIT 1", (underlying_consulta,))
+            cache_hit = cur_cache.fetchone()
+            cur_cache.close()
+
+            if cache_hit:
+                print(f"🧠 MEMORIA GLOBAL: {underlying_consulta} ya descubierto.")
+                cur_mem = conn.cursor(dictionary=True)
+                cur_mem.execute("SELECT motor, ticker, precio, info, nombre_comun, tipo_investment FROM sys_busqueda_resultados WHERE underlying = %s AND fecha_hallazgo >= NOW() - INTERVAL 24 HOUR LIMIT 20", (underlying_consulta,))
+                existentes = cur_mem.fetchall()
+                cur_mem.close()
+                hallazgos_mem = [{"Motor": f['motor'], "Ticker": f['ticker'], "Nombre": f['nombre_comun'], "Precio": f['precio'], "Info": f['info'], "Tipo": f['tipo_investment']} for f in existentes]
+                guardar_en_resultados_db(conn, hallazgos_mem, id_tarea, tk_busqueda, underlying_consulta)
+            else:
+                print(f"🔍 Interrogando mercados para {tk_busqueda}...")
+                consolidado = []
+                motores = [("Binance", mapeo_binance), ("BingX", mapeo_bingx), ("Yahoo", mapeo_yahoo), ("Finnhub", mapeo_finnhub), ("AlphaVantage", mapeo_alpha)]
+                for nombre, funcion in motores:
+                    try:
+                        res = funcion(tk_busqueda)
+                        if res: consolidado.extend(res)
+                    except: continue
+                guardar_en_resultados_db(conn, consolidado, id_tarea, tk_busqueda, underlying_consulta)
+            
+            return True # Retornamos True si procesó algo
+        else:
+            print(".", end="", flush=True)
+            return False # No había tareas
+
+    except Exception as e:
+        print(f"⚠️ Error en ciclo: {e}")
+        return False
+
+# ==========================================================
+# 🚀 EJECUCIÓN DUAL (PC vs GITHUB)
+# ==========================================================
 if __name__ == "__main__":
-    bucle_operativo()
+    print("💎 MOTOR MAESTRO V2.23 - MODO DUAL ACTIVO")
+    
+    # Detectar si estamos en GitHub Actions
+    is_github = os.getenv('GITHUB_ACTIONS') == 'true'
+    
+    conn = mysql.connector.connect(**DB_CONFIG)
+
+    if is_github:
+        print("🤖 [MODO CLOUD] Ejecutando búsqueda de tarea pendiente...")
+        # Ejecutamos una vez. Si quieres que procese más de una en la ráfaga,
+        # puedes poner un pequeño for i in range(5) aquí.
+        ejecutar_un_ciclo_maestro(conn)
+        print("\n🏁 Ciclo Cloud finalizado.")
+    else:
+        print("💻 [MODO LOCAL] Iniciando bucle infinito...")
+        try:
+            while True:
+                ejecutar_un_ciclo_maestro(conn)
+                time.sleep(10)
+        except KeyboardInterrupt:
+            print("\n🛑 Motor detenido por el usuario.")
+    
+    if conn.is_connected():
+        conn.close()

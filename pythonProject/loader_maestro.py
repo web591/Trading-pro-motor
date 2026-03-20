@@ -1,5 +1,6 @@
 import sys
 import os
+import runpy
 
 # 1. GENERAR CONFIG.PY
 config_content = f"""
@@ -17,25 +18,18 @@ ALPHA_VANTAGE_KEY = '{os.getenv('ALPHA_VANTAGE_KEY')}'
 with open("config.py", "w") as f:
     f.write(config_content)
 
-# 2. EJECUTAR MOTOR
-# ... (mantener generación de config.py) ...
+if __name__ == "__main__":
+    print("✅ [CLOUD] Loader Maestro preparado.")
+    
+    # El Maestro no suele necesitar proxy (Yahoo/Finnhub no bloquean GitHub),
+    # pero si quieres usarlo, puedes añadir las líneas de proxy aquí.
 
-try:
-    import CÓDIGO_MAESTRO_V2_23 as m
-    import mysql.connector
-    import config
-    
-    print("🚀 [CLOUD] Iniciando ciclo único de Maestro...")
-    conn = mysql.connector.connect(**config.DB_CONFIG)
-    
-    # Ejecutamos la lógica que busca tareas pendientes una sola vez
-    # Nota: He adaptado esto para que no entre en el 'while True' del motor
-    m.mapear_binance("BTC") # Prueba de carga
-    # Aquí deberías llamar a la función principal de tu maestro si la encapsulaste
-    # Si no, el motor se ejecutará al importar HASTA llegar al while True.
-    
-    conn.close()
-    print("✅ [CLOUD] Ciclo Maestro finalizado.")
-except Exception as e:
-    print(f"❌ Error: {e}")
-    sys.exit(1)
+    try:
+        # 2. EJECUTAR EL MOTOR DIRECTAMENTE
+        # Esto llamará al bloque 'if __name__ == "__main__"' del código maestro
+        runpy.run_path("CÓDIGO_MAESTRO_V2_23.py", run_name="__main__")
+        
+        print("🏁 [CLOUD] Maestro finalizó correctamente.")
+    except Exception as e:
+        print(f"❌ [ERROR MAESTRO]: {e}")
+        sys.exit(1)
