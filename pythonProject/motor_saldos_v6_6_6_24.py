@@ -544,7 +544,7 @@ def procesar_bingx(db, uid, ak, as_):
             {"limit": 100}
         )
 
-        print("[BINGX DEBUG] Respuesta orders:", res_tr)
+         #print("[BINGX DEBUG] Respuesta orders:", res_tr)
 
         orders = res_tr.get("data", {}).get("orders", [])
 
