@@ -1,27 +1,8 @@
 import sys
 import os
 import runpy
-import requests
-import random
-
-def obtener_proxy_valido():
-    print("🔎 [LOADER] Buscando proxy fuera de USA...")
-    # Usamos una API gratuita de proxies
-    url = "https://proxylist.geonode.com/api/proxy-list?limit=10&page=1&sort_by=lastChecked&sort_type=desc&protocols=http%2Chttps&filter_lastChecked=150"
-    try:
-        r = requests.get(url, timeout=10)
-        proxies = r.json().get('data', [])
-        # Filtramos para NO usar USA
-        valid_ones = [p for p in proxies if p['country'] != 'US']
-        
-        if valid_ones:
-            selected = random.choice(valid_ones)
-            px_str = f"http://{selected['ip']}:{selected['port']}"
-            print(f"✅ [LOADER] Proxy seleccionado: {px_str} ({selected['country']})")
-            return px_str
-    except:
-        print("⚠️ [LOADER] No se pudo obtener lista de proxies, intentando directo...")
-    return None
+import multiprocessing
+import time
 
 # 1. GENERAR CONFIG.PY
 config_content = f"""
@@ -35,17 +16,42 @@ DB_CONFIG = {{
 }}
 ENCRYPTION_KEY = '{os.getenv('ENCRYPTION_KEY')}'
 """
-with open("config.py", "w") as f: f.write(config_content)
+with open("config.py", "w") as f:
+    f.write(config_content)
 
-# 2. CONFIGURAR ENTORNO
-proxy = obtener_proxy_valido()
-if proxy:
-    os.environ['HTTP_PROXY'] = proxy
-    os.environ['HTTPS_PROXY'] = proxy
+def ejecutar_motor():
+    # --- CONFIGURACIÓN DE WEBSHARE ---
+    # Reemplaza con tus datos reales de Webshare
+    # Formato: http://usuario:password@ip:puerto
+    proxy_url = "http://khrsahil:wgm3gppg8ksg@64.137.96.74:6641"
+    
+    # Inyectamos el proxy en el proceso del motor
+    os.environ['HTTP_PROXY'] = proxy_url
+    os.environ['HTTPS_PROXY'] = proxy_url
+    
+    print(f"🌐 [MOTOR] Saliendo por Proxy de España...")
+    
+    # Ejecutamos tu motor original
+    try:
+        runpy.run_path("motor_saldos_v6_6_6_24.py", run_name="__main__")
+    except Exception as e:
+        print(f"❌ [MOTOR ERROR] {e}")
 
-# 3. LANZAR MOTOR
-try:
-    print("🚀 [LOADER] Lanzando motor_saldos_v6_6_6_24.py...")
-    runpy.run_path("motor_saldos_v6_6_6_24.py", run_name="__main__")
-except Exception as e:
-    print(f"❌ [ERROR]: {e}")
+if __name__ == "__main__":
+    print("✅ [LOADER] Entorno preparado.")
+    
+    # Lanzamos el motor en un subproceso
+    p = multiprocessing.Process(target=ejecutar_motor)
+    p.start()
+
+    # Esperamos 3 minutos (180 seg). 
+    # Tiempo de sobra para procesar los usuarios y trades una vez.
+    time.sleep(180) 
+
+    if p.is_alive():
+        print("⏱️ [LOADER] Ciclo completado. Terminando proceso para evitar el sleep de 5min.")
+        p.terminate()
+        p.join()
+
+    print("🏁 [LOADER] Proceso finalizado exitosamente.")
+    sys.exit(0)
