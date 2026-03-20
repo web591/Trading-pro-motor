@@ -1,6 +1,8 @@
 import sys
 import os
 import runpy
+import multiprocessing
+import time
 
 # 1. GENERAR CONFIG.PY
 config_content = f"""
@@ -14,22 +16,30 @@ DB_CONFIG = {{
 }}
 ENCRYPTION_KEY = '{os.getenv('ENCRYPTION_KEY')}'
 """
-
 with open("config.py", "w") as f:
     f.write(config_content)
 
-print("✅ [LOADER] config.py generado exitosamente.")
-
-# 2. EJECUTAR EL MOTOR COMO SI FUERA EL SCRIPT PRINCIPAL
-try:
-    print("🚀 [LOADER] Lanzando motor_saldos_v6_6_6_24.py en modo principal...")
-    
-    # runpy.run_path ejecuta el archivo completo, permitiendo que entre 
-    # en el bloque 'if __name__ == "__main__":' automáticamente.
+def ejecutar_motor():
+    # Esta función corre el motor original
     runpy.run_path("motor_saldos_v6_6_6_24.py", run_name="__main__")
+
+if __name__ == "__main__":
+    print("✅ [LOADER] config.py generado.")
+    print("🚀 [LOADER] Iniciando Motor (Modo Ciclo Único para Nube)...")
     
-except Exception as e:
-    print(f"❌ [ERROR] Fallo en ejecución: {e}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
+    # Lanzamos el motor en un proceso separado
+    p = multiprocessing.Process(target=ejecutar_motor)
+    p.start()
+
+    # ESPERAMOS 120 SEGUNDOS (2 minutos)
+    # Tiempo suficiente para que procese Binance/BingX una vez
+    time.sleep(120) 
+
+    # Terminamos el proceso a la fuerza antes de que entre en el sleep de 5 min del motor
+    if p.is_alive():
+        print("⏱️ [LOADER] Tiempo límite alcanzado. Cerrando ciclo para ahorrar minutos.")
+        p.terminate()
+        p.join()
+
+    print("✅ [LOADER] Proceso finalizado. GitHub volverá a arrancar en 5 min.")
+    sys.exit(0)
