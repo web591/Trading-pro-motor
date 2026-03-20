@@ -1,5 +1,6 @@
 import sys
 import os
+import runpy
 
 # 1. GENERAR CONFIG.PY
 config_content = f"""
@@ -19,16 +20,13 @@ with open("config.py", "w") as f:
 
 print("✅ [LOADER] config.py generado exitosamente.")
 
-# 2. EJECUTAR EL MOTOR
+# 2. EJECUTAR EL MOTOR COMO SI FUERA EL SCRIPT PRINCIPAL
 try:
-    print("🚀 [LOADER] Importando motor...")
-    import motor_saldos_v6_6_6_24 as motor
+    print("🚀 [LOADER] Lanzando motor_saldos_v6_6_6_24.py en modo principal...")
     
-    print("⚙️ [LOADER] Forzando inicio de la función principal...")
-    # Llamamos a la función que tiene tu bucle While True
-    # Nota: Como GitHub tiene un tiempo límite, esto correrá hasta que 
-    # se agoten los minutos de la instancia o procese el primer ciclo.
-    motor.actualizar_saldos_continuo()
+    # runpy.run_path ejecuta el archivo completo, permitiendo que entre 
+    # en el bloque 'if __name__ == "__main__":' automáticamente.
+    runpy.run_path("motor_saldos_v6_6_6_24.py", run_name="__main__")
     
 except Exception as e:
     print(f"❌ [ERROR] Fallo en ejecución: {e}")
