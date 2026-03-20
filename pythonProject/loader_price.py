@@ -1,7 +1,13 @@
 import sys
 import os
 
-# 1. CREAR EL ARCHIVO CONFIG.PY FÍSICAMENTE PARA ENGAÑAR AL MOTOR
+print("--- 🔍 REVISIÓN DE ARCHIVOS EN CLOUD ---")
+archivos = os.listdir('.')
+for a in archivos:
+    print(f"📄 Encontrado: {a}")
+print("---------------------------------------")
+
+# 1. CREAR CONFIG.PY
 config_content = f"""
 import os
 DB_CONFIG = {{
@@ -18,15 +24,26 @@ ENCRYPTION_KEY = '{os.getenv('ENCRYPTION_KEY')}'
 
 with open("config.py", "w") as f:
     f.write(config_content)
+print("✅ [LOADER] config.py generado.")
 
-print("✅ [LOADER] Archivo config.py generado dinámicamente.")
-
-# 2. EJECUCIÓN DEL MOTOR
+# 2. INTENTO DE IMPORTACIÓN CON NOMBRE DINÁMICO
 try:
-    import PRICE_SYNC_V1_03 as m
-    print("🚀 [LOADER] Motor cargado. Iniciando actualización...")
+    # Buscamos el archivo que empiece por PRICE_SYNC
+    motor_file = [f for f in archivos if f.startswith('PRICE_SYNC') and f.endswith('.py')]
+    
+    if not motor_file:
+        print("❌ ERROR: No se encontró ningún archivo que empiece por PRICE_SYNC")
+        sys.exit(1)
+        
+    nombre_modulo = motor_file[0].replace('.py', '')
+    print(f"📦 Importando motor desde: {nombre_modulo}")
+    
+    m = __import__(nombre_modulo)
+    
+    print("🚀 [LOADER] Motor cargado. Iniciando...")
     m.actualizar_precios()
-    print("✅ [LOADER] Proceso finalizado exitosamente.")
+    print("✅ [LOADER] Proceso finalizado.")
+    
 except Exception as e:
     print(f"❌ [ERROR]: {str(e)}")
     import traceback
