@@ -1282,6 +1282,6 @@ def run():
         finally:
             if db and db.is_connected(): db.close()
         print(f"\n{'='*65}\n✅ CICLO TERMINADO - ESPERANDO 5 MIN\n{'='*65}")
-        time.sleep(60)
+        time.sleep(120)
 
 if __name__ == "__main__": run()
