@@ -1,5 +1,3 @@
-# Version 1.1 - loader_fundamentales.py
-
 import sys
 import config_cloud as config
 sys.modules['config'] = config

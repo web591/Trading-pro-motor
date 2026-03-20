@@ -1,5 +1,3 @@
-# Version 1.1 - loader_financiero.py
-
 import sys
 import mysql.connector
 import config_cloud as config
