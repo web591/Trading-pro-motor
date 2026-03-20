@@ -1,7 +1,7 @@
 import sys
 import os
 
-# 1. GENERAR CONFIG.PY (Para que el motor lea las credenciales de la nube)
+# 1. GENERAR CONFIG.PY
 config_content = f"""
 import os
 DB_CONFIG = {{
@@ -19,16 +19,19 @@ with open("config.py", "w") as f:
 
 print("✅ [LOADER] config.py generado exitosamente.")
 
-# 2. EJECUTAR EL MOTOR ORIGINAL
+# 2. EJECUTAR EL MOTOR
 try:
-    print("🚀 [LOADER] Iniciando motor_saldos_v6_6_6_24.py...")
+    print("🚀 [LOADER] Importando motor...")
+    import motor_saldos_v6_6_6_24 as motor
     
-    # Importar el motor ejecutará automáticamente su bloque 'if __name__ == "__main__":' 
-    # o su lógica de inicio si está fuera de funciones.
-    import motor_saldos_v6_6_6_24
+    print("⚙️ [LOADER] Forzando inicio de la función principal...")
+    # Llamamos a la función que tiene tu bucle While True
+    # Nota: Como GitHub tiene un tiempo límite, esto correrá hasta que 
+    # se agoten los minutos de la instancia o procese el primer ciclo.
+    motor.actualizar_saldos_continuo()
     
 except Exception as e:
-    print(f"❌ [ERROR] Fallo al ejecutar el motor: {e}")
+    print(f"❌ [ERROR] Fallo en ejecución: {e}")
     import traceback
     traceback.print_exc()
     sys.exit(1)
