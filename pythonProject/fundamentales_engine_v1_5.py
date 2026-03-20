@@ -1,4 +1,5 @@
-# Version 1.5
+# fundamtenales_engine.py - Version 1.6
+# Modificaciones: Lógica de reintento tras 24h y límite de 5 intentos para Alpha Vantage.
 
 import mysql.connector
 import requests
@@ -50,10 +51,11 @@ def motor_actualizacion_activos():
 
 
 # =========================
-# ALPHA INTELIGENTE
+# ALPHA INTELIGENTE (MODIFICADO: Lógica de Cooldown y Reintentos)
 # =========================
 
 def obtener_candidato_alpha(cursor):
+    # Ahora permite reintentar si falló antes (alpha_fail=1) pero solo tras 24h y menos de 5 intentos.
     cursor.execute("""
         SELECT 
             i.symbol,
@@ -63,17 +65,20 @@ def obtener_candidato_alpha(cursor):
             ON i.symbol = t.underlying 
             AND t.motor_fuente = 'alpha_sym'
         WHERE 
-            (i.alpha_fail IS NULL OR i.alpha_fail = 0)
-            AND i.symbol NOT LIKE '%USDT%'
+            -- Filtros básicos
+            i.symbol NOT LIKE '%USDT%'
             AND i.symbol NOT LIKE '%USD%'
             AND (
-                i.last_update IS NULL
-                OR i.last_update < NOW() - INTERVAL 7 DAY
+                -- Caso 1: Activos nuevos o que nunca han fallado y toca actualizar (cada 7 días)
+                ((i.alpha_fail IS NULL OR i.alpha_fail = 0) AND (i.last_update IS NULL OR i.last_update < NOW() - INTERVAL 7 DAY))
+                OR
+                -- Caso 2: REINTENTO INTELIGENTE (Falló antes, tiene menos de 5 intentos y han pasado 24h)
+                (i.alpha_fail = 1 AND i.alpha_intentos < 5 AND i.alpha_last_try < NOW() - INTERVAL 1 DAY)
             )
         ORDER BY 
-            (i.sector IS NULL) DESC,
-            i.alpha_intentos ASC,
-            i.last_update ASC
+            (i.sector IS NULL) DESC, -- Prioridad a los que están vacíos
+            i.alpha_intentos ASC,    -- Prioridad a los que han fallado menos
+            i.last_update ASC        -- Los más viejos primero
         LIMIT 1
     """)
     return cursor.fetchone()
@@ -89,6 +94,7 @@ def marcar_intento(cursor, symbol):
 
 
 def marcar_fail(cursor, symbol):
+    # Marcamos como fallo para que el motor active el cooldown de 24h
     cursor.execute("""
         UPDATE sys_info_activos 
         SET alpha_fail = 1
@@ -116,8 +122,6 @@ def clasificar_asset(r):
 # =========================
 # TRADUCTOR DINÁMICO
 # =========================
-
-# Version 2.0 - guardar_traductor_alpha dinámico
 
 def guardar_traductor_alpha(cursor, symbol, ticker, tipo, categoria):
     cursor.execute("""
@@ -156,7 +160,7 @@ def guardar_traductor_alpha(cursor, symbol, ticker, tipo, categoria):
 
 
 # =========================
-# FUNDAMENTALES FULL
+# FUNDAMENTALES FULL (MODIFICADO: Resetea flags de fallo al tener éxito)
 # =========================
 
 def actualizar_fundamentales(cursor, symbol, r):
@@ -184,7 +188,9 @@ def actualizar_fundamentales(cursor, symbol, r):
             dividendo_fecha = %s,
             ex_dividendo_fecha = %s,
             source_info = 'alpha_vantage',
-            last_update = NOW()
+            last_update = NOW(),
+            alpha_fail = 0,       -- Éxito! Reseteamos fallo
+            alpha_intentos = 0    -- Éxito! Reseteamos intentos
         WHERE symbol = %s
     """, (
         clean(r.get("Sector")),
@@ -220,7 +226,7 @@ def motor_alpha_inteligente():
     candidato = obtener_candidato_alpha(cursor)
 
     if not candidato:
-        print("No hay candidatos Alpha.")
+        print("No hay candidatos Alpha (Todos al día o en espera de 24h).")
         cursor.close()
         conn.close()
         return
@@ -241,12 +247,12 @@ def motor_alpha_inteligente():
 
         # RATE LIMIT
         if "Note" in r:
-            print("RATE LIMIT")
+            print("RATE LIMIT (Alpha Vantage)")
             return
 
-        # FAIL REAL
+        # FAIL REAL (Si Alpha dice que no encontró el símbolo)
         if not r or "Symbol" not in r:
-            print(f"FAIL real: {symbol}")
+            print(f"FAIL real: {symbol} no hallado en Alpha.")
             marcar_fail(cursor, symbol)
             conn.commit()
             return
@@ -254,7 +260,7 @@ def motor_alpha_inteligente():
         # 🔥 CLASIFICACIÓN AUTOMÁTICA
         tipo, categoria = clasificar_asset(r)
 
-        # FUNDAMENTALES
+        # FUNDAMENTALES (Aquí también se resetean los fallos)
         actualizar_fundamentales(cursor, symbol, r)
 
         # 🔥 AUTO-APRENDIZAJE INTELIGENTE
@@ -282,10 +288,12 @@ if __name__ == "__main__":
 
     while True:
 
-        print("\n=== CICLO ===")
+        print("\n=== CICLO FUNDAMENTALES ===")
 
         motor_actualizacion_activos()
         motor_alpha_inteligente()
 
-        print("Esperando 1 hora y pico.22 Ejecuciones diarias..")
+        print("Ciclo completado. Esperando próxima ejecución...")
+        # En la nube (GitHub), esto suele ejecutarse una vez por el Loader, 
+        # pero mantenemos el sleep por si lo corres en local.
         time.sleep(3900)
