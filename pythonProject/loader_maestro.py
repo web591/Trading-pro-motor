@@ -3,10 +3,8 @@
 import sys
 import config_cloud as config
 sys.modules['config'] = config
-m = __import__('CÓDIGO MAESTRO V2.23')
+import MAESTRO_V2_23 as m
 
-print("🚀 [CLOUD] Iniciando búsqueda de nuevos activos...")
-# El maestro no tiene una función simple, ejecutamos su lógica de una vez
-if hasattr(m, 'bucle_operativo'):
-    m.bucle_operativo() 
+print("🚀 [CLOUD] Iniciando Maestro...")
+m.bucle_operativo()
 print("✅ Proceso terminado.")

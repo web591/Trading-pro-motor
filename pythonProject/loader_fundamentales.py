@@ -3,9 +3,9 @@
 import sys
 import config_cloud as config
 sys.modules['config'] = config
-m = __import__('fundamentales_engine_v1.5')
+import fundamentales_engine_v1_5 as m
 
-print("🚀 [CLOUD] Iniciando Fundamentales (Yahoo + 1 Alpha Vantage)...")
+print("🚀 [CLOUD] Iniciando Fundamentales...")
 m.motor_actualizacion_activos()
 m.motor_alpha_inteligente()
 print("✅ Proceso terminado.")

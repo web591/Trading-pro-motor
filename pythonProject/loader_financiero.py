@@ -4,7 +4,7 @@ import sys
 import mysql.connector
 import config_cloud as config
 sys.modules['config'] = config
-m = __import__('motor_financiero_v1.3.0')
+import motor_financiero_v1_3_0 as m
 
 print("🚀 [CLOUD] Iniciando Auditoría Financiera...")
 db = mysql.connector.connect(**config.DB_CONFIG)
