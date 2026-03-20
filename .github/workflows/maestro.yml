@@ -1,0 +1,23 @@
+name: ENGINE-MAESTRO
+on:
+  schedule:
+    - cron: '0 * * * *' # Cada hora al minuto 0
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: pip install mysql-connector-python requests yfinance pandas
+      - name: Run
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          FINNHUB_KEY: ${{ secrets.FINNHUB_KEY }}
+          ALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
+        run: python loader_maestro.py
