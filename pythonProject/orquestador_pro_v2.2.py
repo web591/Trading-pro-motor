@@ -6,11 +6,11 @@ import sys
 import os
 
 MOTORES = [
-    {"nombre": "PRICE_SYNC", "script": "PRICE_SYNC_V1.03.py"},
-    {"nombre": "CONTABLE", "script": "motor_saldos_v6.6.6.24.py"},
-    {"nombre": "FUNDAMENTALES", "script": "fundamentales_engine_v1.5.py"},
-    {"nombre": "MAESTRO", "script": "CÓDIGO MAESTRO V2.23.py"},
-    {"nombre": "FINANCIERO", "script": "motor_financiero_v1.3.0.py"}
+    {"nombre": "PRICE_SYNC", "script": "PRICE_SYNC_V1_03.py"},
+    {"nombre": "CONTABLE", "script": "motor_saldos_v6_6_6_24.py"},
+    {"nombre": "FUNDAMENTALES", "script": "fundamentales_engine_v1_5.py"},
+    {"nombre": "MAESTRO", "script": "CÓDIGO_MAESTRO_V2_23.py"},
+    {"nombre": "FINANCIERO", "script": "motor_financiero_v1_3_0.py"}
 ]
 
 procesos = {}
