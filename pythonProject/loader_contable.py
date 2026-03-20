@@ -46,7 +46,7 @@ if __name__ == "__main__":
 
     # Esperamos 3 minutos (180 seg). 
     # Tiempo de sobra para procesar los usuarios y trades una vez.
-    time.sleep(180) 
+    time.sleep(300) 
 
     if p.is_alive():
         print("⏱️ [LOADER] Ciclo completado. Terminando proceso para evitar el sleep de 5min.")
