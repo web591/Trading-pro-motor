@@ -5,6 +5,7 @@ import random
 import yfinance as yf
 from datetime import datetime
 from config import DB_CONFIG, FINNHUB_KEY
+import os
 
 # ==========================================================
 # 💎 PRICE SYNC V1.03 - MONITOR DE PRECIOS REAL
@@ -167,16 +168,28 @@ def actualizar_precios():
             conn.close()
 
 # ==========================================================
-# BUCLE INFINITO (Ciclos)
+# 🚀 EJECUCIÓN DUAL (PC vs GITHUB)
 # ==========================================================
 if __name__ == "__main__":
-    print("💎 MOTOR DE PRECIOS V1.02 INICIADO")
-    print("   (Binance, BingX, Yahoo, Finnhub habilitados)")
-    print("   Presiona Ctrl+C para detener.")
+    import os
+    print("💎 MOTOR DE PRECIOS V1.03 - MODO DUAL ACTIVO")
     
-    while True:
+    # Detectar si estamos en la nube
+    is_github = os.getenv('GITHUB_ACTIONS') == 'true'
+    
+    if is_github:
+        print("🤖 [MODO CLOUD] Ejecutando ráfaga única de precios...")
+        # En la nube actualiza una vez y se apaga para ahorrar minutos
         actualizar_precios()
-        
-        # Espera 60 segundos antes de la siguiente vuelta para no saturar
-        print("\n⏳ Esperando 60 segundos...")
-        time.sleep(60)
+        print("🏁 Ciclo Cloud finalizado con éxito.")
+    else:
+        print("💻 [MODO LOCAL] Iniciando bucle continuo (60s)...")
+        print("   Presiona Ctrl+C para detener.")
+        try:
+            while True:
+                actualizar_precios()
+                # En tu PC esperamos 60 segundos antes de volver a empezar
+                print(f"\n✅ {datetime.now().strftime('%H:%M:%S')} - Ciclo completado. Esperando 60s...")
+                time.sleep(30)
+        except KeyboardInterrupt:
+            print("\n🛑 Motor de precios detenido por el usuario.")
