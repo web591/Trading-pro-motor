@@ -12,6 +12,7 @@ DB_CONFIG = {{
     'user': '{os.getenv('DB_USER')}',
     'password': '{os.getenv('DB_PASS')}',
     'database': '{os.getenv('DB_NAME')}',
+    PROXY_URL: ${{ secrets.PROXY_URL }},
     'port': int('{os.getenv('DB_PORT', 3306)}')
 }}
 ENCRYPTION_KEY = '{os.getenv('ENCRYPTION_KEY')}'
@@ -20,11 +21,15 @@ with open("config.py", "w") as f:
     f.write(config_content)
 
 def ejecutar_motor():
-    # DATOS DE TU PROXY WEBSHARE
-    proxy_url = "http://khrsahil:TU_PASSWORD@64.137.96.74:6641"
+    # En lugar de escribir la clave aquí, la leemos del Secreto de GitHub
+    proxy_url = os.getenv('PROXY_URL')
     
-    os.environ['HTTP_PROXY'] = proxy_url
-    os.environ['HTTPS_PROXY'] = proxy_url
+    if proxy_url:
+        os.environ['HTTP_PROXY'] = proxy_url
+        os.environ['HTTPS_PROXY'] = proxy_url
+        print(f"🌐 [MOTOR] Saliendo por Proxy Seguro...")
+    else:
+        print("⚠️ [MOTOR] No se detectó PROXY_URL en los Secrets.")
     
     try:
         runpy.run_path("motor_saldos_v6_6_6_24.py", run_name="__main__")
