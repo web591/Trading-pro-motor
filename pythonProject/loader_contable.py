@@ -20,38 +20,32 @@ with open("config.py", "w") as f:
     f.write(config_content)
 
 def ejecutar_motor():
-    # --- CONFIGURACIÓN DE WEBSHARE ---
-    # Reemplaza con tus datos reales de Webshare
-    # Formato: http://usuario:password@ip:puerto
-    proxy_url = "http://khrsahil:wgm3gppg8ksg@64.137.96.74:6641"
+    # DATOS DE TU PROXY WEBSHARE
+    proxy_url = "http://khrsahil:TU_PASSWORD@64.137.96.74:6641"
     
-    # Inyectamos el proxy en el proceso del motor
     os.environ['HTTP_PROXY'] = proxy_url
     os.environ['HTTPS_PROXY'] = proxy_url
     
-    print(f"🌐 [MOTOR] Saliendo por Proxy de España...")
-    
-    # Ejecutamos tu motor original
     try:
         runpy.run_path("motor_saldos_v6_6_6_24.py", run_name="__main__")
     except Exception as e:
         print(f"❌ [MOTOR ERROR] {e}")
 
 if __name__ == "__main__":
-    print("✅ [LOADER] Entorno preparado.")
+    print("✅ [LOADER] Entorno y Proxy preparados.")
     
-    # Lanzamos el motor en un subproceso
     p = multiprocessing.Process(target=ejecutar_motor)
     p.start()
 
-    # Esperamos 3 minutos (180 seg). 
-    # Tiempo de sobra para procesar los usuarios y trades una vez.
-    time.sleep(300) 
+    # ESPERAMOS EXACTAMENTE 200 SEGUNDOS (3 min 20 seg)
+    # Según tus logs, esto es lo que tarda un ciclo completo con 2 usuarios.
+    # Al llegar aquí, cortamos el proceso para que no inicie el 2do ciclo.
+    time.sleep(200) 
 
     if p.is_alive():
-        print("⏱️ [LOADER] Ciclo completado. Terminando proceso para evitar el sleep de 5min.")
+        print("\n⏱️ [LOADER] Ciclo 1 completado. Cerrando para evitar bucle infinito y ahorrar minutos.")
         p.terminate()
         p.join()
 
-    print("🏁 [LOADER] Proceso finalizado exitosamente.")
+    print("🏁 [LOADER] Proceso finalizado. GitHub volverá a lanzarlo en 5 min.")
     sys.exit(0)
