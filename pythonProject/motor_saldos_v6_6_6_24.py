@@ -8,8 +8,7 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 from datetime import datetime
 import config
-import sys
-sys.stdout.reconfigure(line_buffering=True)
+
 
 # ==========================================================
 # 🚩 DISFRAZ BÁSICO BINGX v6.6.6.05
@@ -1285,17 +1284,4 @@ def run():
         print(f"\n{'='*65}\n✅ CICLO TERMINADO - ESPERANDO 5 MIN\n{'='*65}")
         time.sleep(60)
 
-if __name__ == "__main__":
-    # Detectamos si estamos en GitHub Actions
-    is_github = os.getenv('GITHUB_ACTIONS') == 'true'
-    
-    if is_github:
-        print("🤖 [MODO CLOUD] Ejecutando un solo ciclo y finalizando...")
-        # Llama aquí a tu función principal de procesamiento
-        main() 
-    else:
-        print("💻 [MODO LOCAL] Iniciando bucle infinito cada 5 minutos...")
-        while True:
-            main()
-            print("✅ CICLO TERMINADO - ESPERANDO 5 MIN")
-            time.sleep(300)
+if __name__ == "__main__": run()
