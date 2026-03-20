@@ -544,7 +544,7 @@ def procesar_bingx(db, uid, ak, as_):
             {"limit": 100}
         )
 
-         #print("[BINGX DEBUG] Respuesta orders:", res_tr)
+        #print("[BINGX DEBUG] Respuesta orders:", res_tr)
 
         orders = res_tr.get("data", {}).get("orders", [])
 
@@ -1282,6 +1282,6 @@ def run():
         finally:
             if db and db.is_connected(): db.close()
         print(f"\n{'='*65}\n✅ CICLO TERMINADO - ESPERANDO 5 MIN\n{'='*65}")
-        time.sleep(120)
+        time.sleep(60)
 
 if __name__ == "__main__": run()
