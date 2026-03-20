@@ -1,7 +1,6 @@
 import sys
 import os
 import runpy
-import time
 
 # 1. GENERAR CONFIG.PY
 config_content = f"""
@@ -19,21 +18,20 @@ with open("config.py", "w") as f:
     f.write(config_content)
 
 if __name__ == "__main__":
-    print("✅ [LOADER] Entorno preparado.")
+    print("✅ [LOADER] Configuración preparada.")
     
     # 2. CONFIGURAR PROXY
     proxy_url = os.getenv('PROXY_URL')
     if proxy_url:
         os.environ['HTTP_PROXY'] = proxy_url
         os.environ['HTTPS_PROXY'] = proxy_url
-        print(f"🌐 [LOADER] Proxy configurado correctamente.")
+        print(f"🌐 [LOADER] Proxy de España activado.")
 
-    # 3. EJECUTAR MOTOR DIRECTO
-    # Al no usar multiprocessing, el loader esperará a que el motor termine solo
+    # 3. EJECUTAR MOTOR
     try:
-        print("🚀 [LOADER] Lanzando motor...")
+        print("🚀 [LOADER] Lanzando motor en modo sincrónico...")
         runpy.run_path("motor_saldos_v6_6_6_24.py", run_name="__main__")
-        print("🏁 [LOADER] El motor ha finalizado su ejecución.")
+        print("🏁 [LOADER] Motor finalizó correctamente su ciclo.")
     except Exception as e:
-        print(f"❌ [ERROR CRÍTICO]: {e}")
+        print(f"❌ [ERROR]: {e}")
         sys.exit(1)
