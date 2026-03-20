@@ -8,7 +8,10 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 from datetime import datetime
 import config
+import sys
 
+# Forzar a que los prints salgan rápido en GitHub
+sys.stdout.reconfigure(line_buffering=True)
 
 # ==========================================================
 # 🚩 DISFRAZ BÁSICO BINGX v6.6.6.05
@@ -1231,57 +1234,73 @@ def procesar_binance_cm_positions(db, uid, k, s):
     except Exception as e:
         print(f"    [CM POS ERROR] {e}")
 
+import sys
+
+# Forzar a que los prints salgan rápido en GitHub
+sys.stdout.reconfigure(line_buffering=True)
+
+# ... (todo tu código anterior de procesar_binance, etc) ...
+
 # ==========================================================
-# 🚀 EJECUCIÓN PRINCIPAL
+# 🚀 LÓGICA DE UN SOLO CICLO
+# ==========================================================
+def ejecutar_ciclo_completo():
+    print(f"💎 MOTOR v6.6.6.24 - SALDOS + TRADES + OPEN ORDERS + POSITION BINANCE-BINGX")
+    print(f"\n{'='*65}\n🔄 INICIO CICLO: {datetime.now().strftime('%H:%M:%S')}\n{'='*65}")
+    db = None
+    try:
+        db = mysql.connector.connect(**config.DB_CONFIG)
+        cursor = db.cursor(dictionary=True)
+        cursor.execute("SELECT user_id, api_key, api_secret, broker_name FROM api_keys WHERE status=1")
+
+        for u in cursor.fetchall():
+            print(f">> TRABAJANDO: User {u['user_id']} | {u['broker_name']}")
+            
+            # MASTER_KEY debe estar definida arriba en tu código
+            k = descifrar_dato(u['api_key'], MASTER_KEY)
+            s = descifrar_dato(u['api_secret'], MASTER_KEY)
+
+            if u['broker_name'].upper() == "BINANCE":
+                print("        >>> SPOT BINANCE <<<")
+                procesar_binance(db, u['user_id'], k, s)
+                print("        >>> UM FUTURES BINANCE <<<")
+                procesar_binance_um_futures(db, u['user_id'], k, s)
+                procesar_binance_um_positions(db, u['user_id'], k, s)
+                print("        >>> CM FUTURES BINANCE <<<")
+                procesar_binance_cm_futures(db, u['user_id'], k, s)
+                procesar_binance_cm_positions(db, u['user_id'], k, s)
+
+            elif u['broker_name'].upper() == "BINGX":
+                print("        >>> BINGX <<<")
+                procesar_bingx(db, u['user_id'], k, s)
+                print("        >>> BINGX  POSITION  <<<")
+                procesar_bingx_positions(db, u['user_id'], k, s)
+
+            db.commit()
+
+    except Exception as e: 
+        print(f"    [CRITICAL] {e}")
+    finally:
+        if db and db.is_connected(): 
+            db.close()
+    print(f"\n{'='*65}\n✅ CICLO TERMINADO\n{'='*65}")
+
+# ==========================================================
+# 🚀 EJECUCIÓN PRINCIPAL DUAL
 # ==========================================================
 def run():
-    print(f"💎 MOTOR v6.6.6.24 - SALDOS + TRADES + OPEN ORDERS + POSITION BINANCE-BINGX")
-    while True:
-        print(f"\n{'='*65}\n🔄 INICIO CICLO: {datetime.now().strftime('%H:%M:%S')}\n{'='*65}")
-        db = None
-        try:
-            db = mysql.connector.connect(**config.DB_CONFIG)
-            cursor = db.cursor(dictionary=True)
-            cursor.execute("SELECT user_id, api_key, api_secret, broker_name FROM api_keys WHERE status=1")
+    # Detectamos si estamos en GitHub Actions
+    is_github = os.getenv('GITHUB_ACTIONS') == 'true'
 
+    if is_github:
+        # MODO GITHUB: Solo una vez y termina
+        ejecutar_ciclo_completo()
+    else:
+        # MODO LOCAL (TU PC): Bucle infinito
+        while True:
+            ejecutar_ciclo_completo()
+            print(" esperando 5 min para el siguiente ciclo...")
+            time.sleep(300)
 
-            for u in cursor.fetchall():
-                print(f">> TRABAJANDO: User {u['user_id']} | {u['broker_name']}")
-
-                k = descifrar_dato(u['api_key'], MASTER_KEY)
-                s = descifrar_dato(u['api_secret'], MASTER_KEY)
-
-                if u['broker_name'].upper() == "BINANCE":
-
-                    print("        >>> SPOT BINANCE <<<")
-                    procesar_binance(db, u['user_id'], k, s)
-
-                    print("        >>> UM FUTURES BINANCE <<<")
-                    procesar_binance_um_futures(db, u['user_id'], k, s)
-
-                    procesar_binance_um_positions(db, u['user_id'], k, s)
-
-                    print("        >>> CM FUTURES BINANCE <<<")
-                    procesar_binance_cm_futures(db, u['user_id'], k, s)
-
-                    procesar_binance_cm_positions(db, u['user_id'], k, s)
-
-
-
-                elif u['broker_name'].upper() == "BINGX":
-
-                    print("        >>> BINGX <<<")
-                    procesar_bingx(db, u['user_id'], k, s)
-
-                    print("        >>> BINGX  POSITION  <<<")
-                    procesar_bingx_positions(db, u['user_id'], k, s)
-
-                db.commit()
-
-        except Exception as e: print(f"    [CRITICAL] {e}")
-        finally:
-            if db and db.is_connected(): db.close()
-        print(f"\n{'='*65}\n✅ CICLO TERMINADO - ESPERANDO 5 MIN\n{'='*65}")
-        time.sleep(60)
-
-if __name__ == "__main__": run()
+if __name__ == "__main__":
+    run()
