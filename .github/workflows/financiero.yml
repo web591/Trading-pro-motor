@@ -1,8 +1,9 @@
 name: ENGINE-FINANCIERO
 on:
   schedule:
-    # 18:00, 04:00 y 11:00 en horario de México (CST)
-    - cron: '0 0,10,17 * * *' 
+    # 18:45, 04:45 y 11:45 en horario de México (CST)
+    # Margen de 45 min para asegurar disponibilidad de APIs y evitar saturación de GitHub.
+    - cron: '45 0,10,17 * * *' 
   workflow_dispatch:
 jobs:
   run:
