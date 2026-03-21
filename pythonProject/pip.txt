@@ -2,6 +2,10 @@ pip install mysql-connector-python requests yfinance pandas binance-connector bi
 
 deactivate
 
+esto es para ponerlos al inicio de la pc cuando se reinicia da doble click lo que esta en la carpeta
+window +R
+shell:startup
+
 pip install mysql-connector-python
 .\.venv\Scripts\activate
 deactivate
