@@ -1,3 +1,5 @@
+pip install mysql-connector-python requests yfinance pandas binance-connector binance-futures-connector python-binance pycryptodome
+
 
 
 pip install mysql-connector-python
