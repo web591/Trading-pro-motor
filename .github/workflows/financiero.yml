@@ -1,7 +1,8 @@
 name: ENGINE-FINANCIERO
 on:
   schedule:
-    - cron: '0 8,14,20 * * *' # 8:00, 14:00 y 20:00 UTC
+    # 18:00, 04:00 y 11:00 en horario de México (CST)
+    - cron: '0 0,10,17 * * *' 
   workflow_dispatch:
 jobs:
   run:
