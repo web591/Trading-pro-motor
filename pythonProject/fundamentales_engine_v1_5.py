@@ -70,7 +70,7 @@ def obtener_candidato_alpha(cursor):
                 (i.sector IS NULL AND (i.alpha_fail = 0 OR i.alpha_last_try < NOW() - INTERVAL 1 DAY))
                 OR
                 -- PRIORIDAD 2: Tiene sector pero toca refrescar (cada 7 días)
-                (i.sector IS NOT PRESENT AND i.last_update < NOW() - INTERVAL 7 DAY)
+                (i.sector IS NOT NULL AND i.last_update < NOW() - INTERVAL 7 DAY)
                 OR
                 -- PRIORIDAD 3: Reintento de fallidos con menos de 5 intentos
                 (i.alpha_fail = 1 AND i.alpha_intentos < 5 AND i.alpha_last_try < NOW() - INTERVAL 1 DAY)
