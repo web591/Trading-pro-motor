@@ -13,3 +13,22 @@ pip install yfinance --upgrade
 pip install pycryptodome mysql-connector-python python-binance
 pip install pandas
 
+
+Microsoft Windows [Versión 10.0.19045.6466]
+(c) Microsoft Corporation. Todos los derechos reservados.
+
+C:\Users\ajafa>python --version
+Python 3.12.2
+
+C:\Users\ajafa>
+
+
+"C:\Users\ajafa\Mi unidad\sublime_Texts_Github\Trading-pro-motor\pythonProject\.venv\Scripts\python.exe" "C:\Users\ajafa\Mi unidad\sublime_Texts_Github\Trading-pro-motor\pythonProject\PRICE_SYNC_V1_03.py" 
+💎 MOTOR DE PRECIOS V1.03 - MODO DUAL ACTIVO
+💻 [MODO LOCAL] Bucle continuo (30s)...
+
+🔄 [SYNC 10:19:33] Actualizando 139 pares...
+   ✅ AAPL-USDT       | $  247.9900 |  -0.30% | bingx_stock
+   ✅ Apple Inc.      | $  247.9900 |  -0.39% | yahoo_sym
+   ✅ AMZN            | $  207.5300 |   0.08% | binance_usdt_future
+   ✅ AMZN-USDT       | $  205.5600 |  -0.88% | bingx_stock
