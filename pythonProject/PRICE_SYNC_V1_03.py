@@ -1,9 +1,4 @@
-
-# Importamos la configuración. 
-# Si PROXY_URL no existe en config.py, el motor lo ignorará (ideal para tu PC)
-try:
-    from config import DB_CONFIG, FINNHUB_KEY, PROXY_URL
-except ImportError:import mysql.connector
+import mysql.connector
 import time
 import requests
 import random
@@ -11,6 +6,11 @@ import yfinance as yf
 from datetime import datetime
 import os
 
+# Importamos la configuración. 
+# Si PROXY_URL no existe en config.py, el motor lo ignorará (ideal para tu PC)
+try:
+    from config import DB_CONFIG, FINNHUB_KEY, PROXY_URL
+except ImportError:
     from config import DB_CONFIG, FINNHUB_KEY
     PROXY_URL = None
 
