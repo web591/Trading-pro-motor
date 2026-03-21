@@ -1,9 +1,10 @@
 pip install mysql-connector-python requests yfinance pandas binance-connector binance-futures-connector python-binance pycryptodome
 
-
+deactivate
 
 pip install mysql-connector-python
 .\.venv\Scripts\activate
+deactivate
 pip install python-binance
 pip install finnhub-python
 pip install alpha_vantage
@@ -11,3 +12,4 @@ pip install yfinance
 pip install yfinance --upgrade
 pip install pycryptodome mysql-connector-python python-binance
 pip install pandas
+
