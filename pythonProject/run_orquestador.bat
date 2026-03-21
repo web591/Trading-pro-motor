@@ -1,9 +1,10 @@
 @echo off
 title 🚀 TRADING ENGINE - SISTEMA ACTIVO
 
-:: 1. Abrir Chrome con tus paneles de monitoreo (Unmineable y TradingView)
-echo 🌐 Abriendo paneles visuales...
-start chrome "https://unmineable.com/address/0x22c0f265c5ccc31e336793ee9420207a81ae2680?coin=USDT" "https://es.tradingview.com/chart/0MbLy4wx/"
+:: 1. Abrir Chrome en el perfil de Trading (Default)
+echo 🌐 Abriendo paneles visuales en tu perfil de Trading...
+:: Usamos la ruta directa al ejecutable y forzamos el perfil Default
+start "" "C:\Program Files\Google\Chrome\Application\chrome.exe" --profile-directory="Default" "https://unmineable.com" "https://es.tradingview.com"
 
 :: 2. Entramos a la carpeta del proyecto
 cd /d "C:\Github_Proyects\Trading-pro-motor"
