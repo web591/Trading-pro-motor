@@ -53,9 +53,7 @@ def motor_actualizacion_activos():
 # =========================
 # ALPHA INTELIGENTE (MODIFICADO: Lógica de Cooldown y Reintentos)
 # =========================
-
 def obtener_candidato_alpha(cursor):
-    # Ahora permite reintentar si falló antes (alpha_fail=1) pero solo tras 24h y menos de 5 intentos.
     cursor.execute("""
         SELECT 
             i.symbol,
@@ -65,24 +63,25 @@ def obtener_candidato_alpha(cursor):
             ON i.symbol = t.underlying 
             AND t.motor_fuente = 'alpha_sym'
         WHERE 
-            -- Filtros básicos
             i.symbol NOT LIKE '%USDT%'
             AND i.symbol NOT LIKE '%USD%'
             AND (
-                -- Caso 1: Activos nuevos o que nunca han fallado y toca actualizar (cada 7 días)
-                ((i.alpha_fail IS NULL OR i.alpha_fail = 0) AND (i.last_update IS NULL OR i.last_update < NOW() - INTERVAL 7 DAY))
+                -- PRIORIDAD 1: No tiene sector (independientemente de cuándo se actualizó)
+                (i.sector IS NULL AND (i.alpha_fail = 0 OR i.alpha_last_try < NOW() - INTERVAL 1 DAY))
                 OR
-                -- Caso 2: REINTENTO INTELIGENTE (Falló antes, tiene menos de 5 intentos y han pasado 24h)
+                -- PRIORIDAD 2: Tiene sector pero toca refrescar (cada 7 días)
+                (i.sector IS NOT PRESENT AND i.last_update < NOW() - INTERVAL 7 DAY)
+                OR
+                -- PRIORIDAD 3: Reintento de fallidos con menos de 5 intentos
                 (i.alpha_fail = 1 AND i.alpha_intentos < 5 AND i.alpha_last_try < NOW() - INTERVAL 1 DAY)
             )
         ORDER BY 
-            (i.sector IS NULL) DESC, -- Prioridad a los que están vacíos
-            i.alpha_intentos ASC,    -- Prioridad a los que han fallado menos
-            i.last_update ASC        -- Los más viejos primero
+            (i.sector IS NULL) DESC,   -- Si no tiene sector, va al principio de la fila
+            i.alpha_intentos ASC, 
+            i.last_update ASC
         LIMIT 1
     """)
     return cursor.fetchone()
-
 
 def marcar_intento(cursor, symbol):
     cursor.execute("""
