@@ -74,7 +74,7 @@ if __name__ == "__main__":
     print("========================================")
     print("💎 ORQUESTADOR PRO V2.3 - TRADING ENGINE")
     print(f"🐍 Entorno: {sys.executable}")
-    print("📍 Directorio: {os.getcwd()}")
+    print(F"📍 Directorio: {os.getcwd()}")
     print("========================================")
     try:
         monitor()
