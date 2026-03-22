@@ -9,6 +9,29 @@ from Crypto.Util.Padding import unpad
 from datetime import datetime
 import config
 import sys
+# 🔐 LOCK DISTRIBUIDO
+import socket
+
+def obtener_lock(cursor, lock_name, timeout=120):
+    host = socket.gethostname()
+
+    cursor.execute("""
+        DELETE FROM sys_locks
+        WHERE lock_name = %s
+        AND lock_time < NOW() - INTERVAL %s SECOND
+    """, (lock_name, timeout))
+
+    try:
+        cursor.execute("""
+            INSERT INTO sys_locks (lock_name, locked_by, lock_time)
+            VALUES (%s, %s, NOW())
+        """, (lock_name, host))
+        return True
+    except:
+        return False
+
+def liberar_lock(cursor, lock_name):
+    cursor.execute("DELETE FROM sys_locks WHERE lock_name = %s", (lock_name,))
 
 # Forzar a que los prints salgan rápido en GitHub
 sys.stdout.reconfigure(line_buffering=True)
@@ -1242,30 +1265,39 @@ sys.stdout.reconfigure(line_buffering=True)
 # ... (todo tu código anterior de procesar_binance, etc) ...
 
 # ==========================================================
-# 🚀 LÓGICA DE UN SOLO CICLO
+# 🚀 LÓGICA DE UN SOLO CICLO (CON LOCK)
+# Version 6.6.6.25
 # ==========================================================
 def ejecutar_ciclo_completo():
-    print(f"💎 MOTOR v6.6.6.24 - SALDOS + TRADES + OPEN ORDERS + POSITION BINANCE-BINGX")
+    print(f"💎 MOTOR v6.6.6.25 - SALDOS + TRADES + OPEN ORDERS + POSITION BINANCE-BINGX")
     print(f"\n{'='*65}\n🔄 INICIO CICLO: {datetime.now().strftime('%H:%M:%S')}\n{'='*65}")
+
     db = None
     try:
         db = mysql.connector.connect(**config.DB_CONFIG)
         cursor = db.cursor(dictionary=True)
+
+        # 🔐 INTENTO DE LOCK GLOBAL CONTABLE
+        if not obtener_lock(cursor, "LOCK_CONTABLE"):
+            print("⛔ LOCK_CONTABLE activo en otro entorno → se cancela este ciclo")
+            return
+
         cursor.execute("SELECT user_id, api_key, api_secret, broker_name FROM api_keys WHERE status=1")
 
         for u in cursor.fetchall():
             print(f">> TRABAJANDO: User {u['user_id']} | {u['broker_name']}")
             
-            # MASTER_KEY debe estar definida arriba en tu código
             k = descifrar_dato(u['api_key'], MASTER_KEY)
             s = descifrar_dato(u['api_secret'], MASTER_KEY)
 
             if u['broker_name'].upper() == "BINANCE":
                 print("        >>> SPOT BINANCE <<<")
                 procesar_binance(db, u['user_id'], k, s)
+
                 print("        >>> UM FUTURES BINANCE <<<")
                 procesar_binance_um_futures(db, u['user_id'], k, s)
                 procesar_binance_um_positions(db, u['user_id'], k, s)
+
                 print("        >>> CM FUTURES BINANCE <<<")
                 procesar_binance_cm_futures(db, u['user_id'], k, s)
                 procesar_binance_cm_positions(db, u['user_id'], k, s)
@@ -1273,6 +1305,7 @@ def ejecutar_ciclo_completo():
             elif u['broker_name'].upper() == "BINGX":
                 print("        >>> BINGX <<<")
                 procesar_bingx(db, u['user_id'], k, s)
+
                 print("        >>> BINGX  POSITION  <<<")
                 procesar_bingx_positions(db, u['user_id'], k, s)
 
@@ -1280,9 +1313,20 @@ def ejecutar_ciclo_completo():
 
     except Exception as e: 
         print(f"    [CRITICAL] {e}")
+
     finally:
+        # 🔓 LIBERAR LOCK SIEMPRE
+        try:
+            if db and db.is_connected():
+                cursor = db.cursor()
+                liberar_lock(cursor, "LOCK_CONTABLE")
+                db.commit()
+        except:
+            pass
+
         if db and db.is_connected(): 
             db.close()
+
     print(f"\n{'='*65}\n✅ CICLO TERMINADO\n{'='*65}")
 
 # ==========================================================
