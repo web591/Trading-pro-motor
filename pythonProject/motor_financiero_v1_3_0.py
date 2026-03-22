@@ -753,12 +753,45 @@ def ejecutar_motor_financiero(db):
     print(f"{'='*60}\n")
 
 # ... (Todo el código anterior se mantiene idéntico) ...
-
 # ==========================================================
-# 🚀 EJECUCIÓN PRINCIPAL CON BUCLE DE 1 HORA
+# 🧠 CONTROL DUAL PC vs GITHUB
+# ==========================================================
+import os
+from datetime import datetime
+
+def motor_debe_ejecutar():
+    entorno = os.getenv("RUN_ENV", "LOCAL")  # LOCAL o GITHUB
+    hora = datetime.utcnow().hour
+
+    # Si es LOCAL (tu PC) → siempre corre
+    if entorno == "LOCAL":
+        print("[MODE] Ejecutando en PC local")
+        return True
+
+    # Si es GITHUB → solo corre en ciertas horas
+    if entorno == "GITHUB":
+        print("[MODE] Ejecutando en GitHub")
+
+        # Ventana de respaldo (cuando tu PC probablemente esté apagada)
+        if hora in [3, 4, 5]:  
+            return True
+        else:
+            print("[SKIP] GitHub fuera de horario")
+            return False
+
+    return True
+# ==========================================================
+# 🚀 EJECUCIÓN PRINCIPAL CON BUCLE DE 1 HORA (DUAL)
 # ==========================================================
 if __name__ == "__main__":
     while True:
+
+        # 🧠 CONTROL PC vs GITHUB
+        if not motor_debe_ejecutar():
+            print("[SKIP] Motor no ejecutado. Reintentando en 10 min...")
+            time.sleep(600)  # espera 10 minutos
+            continue
+
         db = None
         try:
             # Iniciamos conexión al principio de cada ciclo para evitar timeouts
