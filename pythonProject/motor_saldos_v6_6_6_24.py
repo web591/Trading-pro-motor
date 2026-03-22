@@ -293,8 +293,10 @@ def procesar_bingx(db, uid, ak, as_):
             print(f"    [BINGX ERROR]: {e}")
             return {}
 
+# Version 6.7.0
+
     # ==========================================================
-    # 🎯 BUSQUEDA TRADUCTOR BINGX - ESCENARIO B PURO
+    # 🎯 BUSQUEDA TRADUCTOR BINGX - ESCENARIO B PURO (LIMPIO)
     # ==========================================================
     def buscar_en_traductor_bingx(simbolo_api):
 
@@ -305,7 +307,7 @@ def procesar_bingx(db, uid, ak, as_):
         ticker_limpio = ticker.replace("-", "").replace("/", "").replace("=X", "")
         underlying = ticker_limpio.replace("USDT", "").replace("USDC", "").replace("USD", "")
 
-        # 1️⃣ Exacto en cualquier categoría BingX
+        # 1️⃣ Exacto / normalizado / underlying directo
         sql = """
             SELECT id, categoria_producto, tipo_investment, motor_fuente
             FROM sys_traductor_simbolos
@@ -319,39 +321,26 @@ def procesar_bingx(db, uid, ak, as_):
         """
         cursor.execute(sql, (ticker, ticker_limpio, underlying))
         row = cursor.fetchone()
+
         if row:
             return row
 
-        # 2️⃣ Rescate por coincidencia parcial de underlying
+        # 2️⃣ Rescate por coincidencia parcial (CFD / derivados tipo AAPLX, TSLAX)
         sql = """
-            SELECT id, categoria_producto, tipo_investment
+            SELECT id, categoria_producto, tipo_investment,  motor_fuente
             FROM sys_traductor_simbolos
             WHERE motor_fuente LIKE 'bingx_%'
             AND %s LIKE CONCAT('%%', underlying, '%%')
             LIMIT 1
         """
         cursor.execute(sql, (ticker_limpio,))
-        return cursor.fetchone()
+        row = cursor.fetchone()
 
-        # 2. CAPA DE RESCATE (Para AAPLX, TSLAX, etc.) - Si nada arriba funcionó
-        sql_rescate = """SELECT id, ticker_motor, underlying, categoria_producto, tipo_investment 
-                         FROM sys_traductor_simbolos 
-                         WHERE (motor_fuente LIKE 'bingx_%%' OR motor_fuente LIKE 'binance_%%')
-                         AND %s LIKE CONCAT('%%', underlying, '%%')
-                         LIMIT 1"""
-        cursor.execute(sql_rescate, (s_limpio,))
-        return cursor.fetchone()
-        
-        # BUSQUEDA NIVEL 2: Rescate para CFDs (AAPLX, TSLA, etc.)
-        if not res:
-            sql_cfd = """SELECT id, ticker_motor, underlying, categoria_producto, tipo_investment 
-                         FROM sys_traductor_simbolos 
-                         WHERE motor_fuente LIKE 'bingx_%%' 
-                         AND %s LIKE CONCAT('%%', underlying, '%%')
-                         LIMIT 1"""
-            cursor.execute(sql_cfd, (s_limpio,))
-            res = cursor.fetchone()
-        return res
+        if row:
+            return row
+
+        # 3️⃣ No encontrado
+        return None
     
     # ==========================================================
     # --- 1. SPOT (Lógica v5.5.6) ---
