@@ -9,7 +9,6 @@ from Crypto.Util.Padding import unpad
 from datetime import datetime
 import config
 import sys
-# 🔐 LOCK DISTRIBUIDO
 import socket
 
 def obtener_lock(cursor, lock_name, timeout=120):
@@ -114,35 +113,30 @@ def disparar_radar(cursor, uid, ticker, ctx):
     cursor.execute(sql, (uid, ticker, f"Detectado en {ctx}"))    
 
 def obtener_precio_usd(cursor, tid, asset_name):
-    asset_name = asset_name.upper()
-    clean_ticker = asset_name.replace("LD", "").replace("STK", "")
-
-    if clean_ticker in ['USDT', 'USDC', 'DAI', 'BUSD', 'PYUSD']:
-        return 1.0
-
+    """Retorna precio y asegura que las stables tengan valor 1.0"""
     try:
+        asset_name = asset_name.upper()
+        clean_ticker = asset_name.replace("LD", "").replace("STK", "").strip()
+
+        # 1. Stables directas
+        if clean_ticker in ['USDT', 'USDC', 'DAI', 'BUSD', 'PYUSD']:
+            return 1.0
+
+        # 2. Precio por Traductor ID
         if tid:
-            sql = """
-                SELECT price 
-                FROM sys_precios_activos 
-                WHERE traductor_id = %s 
-                ORDER BY last_update DESC 
-                LIMIT 1
-            """
+            sql = "SELECT price FROM sys_precios_activos WHERE traductor_id = %s ORDER BY last_update DESC LIMIT 1"
             cursor.execute(sql, (tid,))
             row = cursor.fetchone()
-            if row and row['price'] > 0:
+            if row and row['price'] > 0: 
                 return float(row['price'])
 
-        # 🔵 Fallback por underlying
+        # 3. FALLBACK por Underlying (Importante para activos LD o ahorros)
         sql_fb = """
             SELECT p.price
             FROM sys_precios_activos p
             JOIN sys_traductor_simbolos t ON p.traductor_id = t.id
-            WHERE t.underlying = %s
-            AND t.is_active = 1
-            ORDER BY p.last_update DESC
-            LIMIT 1
+            WHERE t.underlying = %s AND t.is_active = 1
+            ORDER BY p.last_update DESC LIMIT 1
         """
         cursor.execute(sql_fb, (clean_ticker,))
         row_fb = cursor.fetchone()
@@ -151,21 +145,18 @@ def obtener_precio_usd(cursor, tid, asset_name):
 
     except Exception as e:
         print(f"[Precio Error {asset_name}]: {e}")
-
     return 0.0
 
 def registrar_saldo(cursor, uid, info_traductor, total, locked, asset, broker, tipo_cuenta):
     tid = info_traductor['id'] if info_traductor else None
     precio = obtener_precio_usd(cursor, tid, asset)
     valor_usd = total * precio
+    
+    # Eliminada la columna 'status' que daba error 1054
     sql = """
         INSERT INTO sys_saldos_usuarios 
         (user_id, broker_name, asset, traductor_id, cantidad_total, cantidad_disponible, cantidad_bloqueada, valor_usd, precio_referencia, tipo_cuenta, last_update) 
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()) 
-        ON DUPLICATE KEY UPDATE 
-            cantidad_total=VALUES(cantidad_total), cantidad_disponible=VALUES(cantidad_disponible),
-            cantidad_bloqueada=VALUES(cantidad_bloqueada), valor_usd=VALUES(valor_usd), 
-            precio_referencia=VALUES(precio_referencia), last_update=NOW()
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
     """
     cursor.execute(sql, (uid, broker, asset, tid, total, total-locked, locked, valor_usd, precio, tipo_cuenta))
 
@@ -176,7 +167,6 @@ def generar_tarea_incorporacion(cursor, uid, broker, symbol, contexto):
         VALUES (%s, %s, %s, %s)
     """
     cursor.execute(sql, (uid, broker, symbol, contexto))
-
 
 # ==========================================================
 # 🕒 GESTIÓN DE TIEMPO
@@ -194,7 +184,6 @@ def actualizar_punto_sincro(cursor, uid, broker, endpoint, nuevo_ts):
         ON DUPLICATE KEY UPDATE last_timestamp = VALUES(last_timestamp), last_update = NOW()
     """
     cursor.execute(sql, (uid, broker, endpoint, nuevo_ts))
-
 
 # ==========================================================
 # 📉 REGISTRO DE TRADES v6.7.1 (FIX BINGX FUTURES)
@@ -257,6 +246,7 @@ def registrar_trade(cursor, uid, t_data, info_traductor, broker_nombre):
     except Exception as e:
         print(f"❌ Error en registro: {e}")
         return False
+
 # ==========================================================
 # 🟦 PROCESADOR BINGX (V6.6.8 - REPARACIÓN FINAL MAPPING)
 # ==========================================================
@@ -343,10 +333,12 @@ def procesar_bingx(db, uid, ak, as_):
         return None
     
     # ==========================================================
-    # --- 1. SPOT (Lógica v5.5.6) ---
+    # --- 1. SPOT (Lógica v5.5.6 PROCESAR SALDOS (SPOT + FUTUROS)) ---
     # ==========================================================
 
-    # --- 1. PROCESAR SALDOS (SPOT + FUTUROS) ---
+    # --- EFECTO SNAPSHOT ---
+    cursor.execute("DELETE FROM sys_saldos_usuarios WHERE user_id = %s AND broker_name = 'BINGX'", (uid,))
+
     s_count_global = 0  # Esta será nuestra cuenta real
        
     try:
@@ -362,6 +354,8 @@ def procesar_bingx(db, uid, ak, as_):
             print(f"    [OK] BingX Spot Saldo procesado.")
     except Exception as e: 
         print(f"    [!] Error crítico en BingX Spot: {e}")
+
+    db.commit()
 
     # ==========================================================
     # --- 2. FUTURES PERPETUAL (Ajustado según Debug Master) ---
@@ -452,16 +446,9 @@ def procesar_bingx(db, uid, ak, as_):
     # 🟩 BINGX SPOT TRADES
     # Version 6.7.2
     # ==========================================================
-
     print("        >>> BINGX SPOT TRADES <<<")
-
     try:
-
-        start_ts = obtener_punto_inicio_sincro(
-            cursor,
-            uid,
-            "BINGX",
-            "trades_spot"
+        start_ts = obtener_punto_inicio_sincro(cursor,uid,"BINGX","trades_spot"
         )
 
         res_tr = bx_req(
@@ -474,19 +461,11 @@ def procesar_bingx(db, uid, ak, as_):
         trades_insertados = 0
 
         for t in sorted(trades_raw, key=lambda x: x['time']):
-
             symbol = t.get("symbol")
-
             info = buscar_en_traductor_bingx(symbol)
-
             if not info:
-
                 generar_tarea_incorporacion(
-                    cursor,
-                    uid,
-                    "BINGX",
-                    symbol,
-                    "TRADE_SPOT"
+                    cursor,uid,"BINGX",symbol,"TRADE_SPOT"
                 )
 
                 continue
@@ -496,62 +475,37 @@ def procesar_bingx(db, uid, ak, as_):
 
             trade_data = {
 
-                "tradeId": str(t.get("id")),
-                "orderId": str(t.get("orderId")),
-                "symbol": symbol,
-                "side": t.get("side"),
-                "price": price,
-                "qty": qty,
-                "quoteQty": qty * price,
-                "commission": abs(float(t.get("commission",0))),
-                "commissionAsset": t.get("commissionAsset",""),
-                "realizedPnl": 0,
-                
+                "tradeId": str(t.get("id")),"orderId": str(t.get("orderId")),
+                "symbol": symbol,"side": t.get("side"),"price": price,
+                "qty": qty,"quoteQty": qty * price,"commission": abs(float(t.get("commission",0))),
+                "commissionAsset": t.get("commissionAsset",""),"realizedPnl": 0,
                 "fecha_sql": datetime.fromtimestamp(
                     t.get("time",0)/1000
-                ).strftime("%Y-%m-%d %H:%M:%S"),
-
-                "isMaker": False,
-                "es_futuro": False
+                ).strftime("%Y-%m-%d %H:%M:%S"),"isMaker": False,"es_futuro": False
             }
 
             if registrar_trade(
-                cursor,
-                uid,
-                trade_data,
-                info,
-                "BINGX"
+                cursor,uid,trade_data,info,"BINGX"
             ):
 
                 trades_insertados += 1
 
         actualizar_punto_sincro(
-            cursor,
-            uid,
-            "BINGX",
-            "trades_spot",
-            int(time.time()*1000)
+            cursor,uid,"BINGX","trades_spot",int(time.time()*1000)
         )
 
         print(f"    [OK] Trades spot insertados: {trades_insertados}")
-
     except Exception as e:
-
         print(f"[BINGX SPOT ERROR] {e}")        
 
     # ==========================================================
     # 🟧 BINGX FUTURES TRADES
     # Version 6.7.3 (FIX PROFIT + STRUCTURE)
     # ==========================================================
-
     print("        >>> BINGX FUTURES TRADES <<<")
-
     try:
         start_ts = obtener_punto_inicio_sincro(
-            cursor,
-            uid,
-            "BINGX",
-            "trades_futures"
+            cursor,uid,"BINGX","trades_futures"
         )
 
         res_tr = bx_req(
@@ -570,12 +524,9 @@ def procesar_bingx(db, uid, ak, as_):
 
             if o.get("status") != "FILLED":
                 continue
-
             update_time = int(o.get("updateTime", 0))
-
             if update_time <= start_ts:
                 continue
-
             if update_time > max_ts:
                 max_ts = update_time
 
@@ -584,11 +535,7 @@ def procesar_bingx(db, uid, ak, as_):
             if not info:
 
                 generar_tarea_incorporacion(
-                    cursor,
-                    uid,
-                    "BINGX",
-                    symbol,
-                    "TRADE_FUTURES"
+                    cursor,uid,"BINGX",symbol,"TRADE_FUTURES"
                 )
 
                 continue
@@ -598,47 +545,29 @@ def procesar_bingx(db, uid, ak, as_):
 
             trade_data = {
 
-                "tradeId": str(o.get("orderId")),
-                "orderId": str(o.get("orderId")),
-                "symbol": symbol,
-                "side": o.get("side"),
-                "positionSide": o.get("positionSide"),
-                "price": price,
-                "qty": qty,
-                "quoteQty": float(o.get("cumQuote",0)),
-                "commission": abs(float(o.get("commission",0))),
-                "commissionAsset": "USDT",
-                "reduceOnly": o.get("reduceOnly", False),
-                "realizedPnl": float(o.get("profit",0)),                
+                "tradeId": str(o.get("orderId")),"orderId": str(o.get("orderId")),
+                "symbol": symbol,"side": o.get("side"),
+                "positionSide": o.get("positionSide"),"price": price,
+                "qty": qty,"quoteQty": float(o.get("cumQuote",0)),
+                "commission": abs(float(o.get("commission",0))),"commissionAsset": "USDT",
+                "reduceOnly": o.get("reduceOnly", False),"realizedPnl": float(o.get("profit",0)),                
                 "fecha_sql": datetime.fromtimestamp(
                     o.get("updateTime",0)/1000
-                ).strftime("%Y-%m-%d %H:%M:%S"),
-                "isMaker": False,
-                "es_futuro": True
+                ).strftime("%Y-%m-%d %H:%M:%S"),"isMaker": False,"es_futuro": True
             }
 
             if registrar_trade(
-                cursor,
-                uid,
-                trade_data,
-                info,
-                "BINGX"
+                cursor,uid,trade_data,info,"BINGX"
             ):
 
                 trades_insertados += 1
 
         actualizar_punto_sincro(
-            cursor,
-            uid,
-            "BINGX",
-            "trades_futures",
-            max_ts
+            cursor,uid,"BINGX","trades_futures",max_ts
         )
 
         print(f"    [OK] Trades futures insertados: {trades_insertados}")
-
     except Exception as e:
-
         print(f"[BINGX FUTURES ERROR] {e}")
 
 # ==========================================================
@@ -721,18 +650,11 @@ def procesar_bingx_positions(db, uid, ak, as_):
                         last_update
                     ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                 """, (
-                    uid,
-                    "BINGX",
-                    info["id"] if info else None,
-                    symbol,
-                    "LONG" if position_amt > 0 else "SHORT",
-                    position_amt,
-                    float(p.get("avgPrice", 0)),
-                    float(p.get("markPrice", 0)),
-                    float(p.get("unrealizedProfit", 0)),
-                    float(p.get("positionMargin", 0)),
-                    float(p.get("maintMargin", 0)),
-                    int(p.get("leverage", 0)),
+                    uid,"BINGX",info["id"] if info else None,
+                    symbol,"LONG" if position_amt > 0 else "SHORT",position_amt,
+                    float(p.get("avgPrice", 0)),float(p.get("markPrice", 0)),
+                    float(p.get("unrealizedProfit", 0)),float(p.get("positionMargin", 0)),
+                    float(p.get("maintMargin", 0)),int(p.get("leverage", 0)),
                     p.get("marginType", "cross")
                 ))
 
@@ -751,6 +673,9 @@ def procesar_binance(db, uid, k, s):
         client = Client(k, s)
         cursor = db.cursor(dictionary=True)
         
+        # --- EFECTO SNAPSHOT ---
+        cursor.execute("DELETE FROM sys_saldos_usuarios WHERE user_id = %s AND broker_name = 'BINANCE' AND tipo_cuenta = 'SPOT'", (uid,))
+
         # SALDOS
         acc = client.get_account()
         s_count = 0
@@ -761,6 +686,10 @@ def procesar_binance(db, uid, k, s):
                 registrar_saldo(cursor, uid, info, total, float(b['locked']), b['asset'], "BINANCE", "SPOT")
                 s_count += 1
         print(f"    [OK] Binance Saldos actualizado: {s_count} activos.")
+        db.commit()
+        print(f"    [OK] Binance Spot Snapshot completado.")
+    except Exception as e:
+        print(f"    [!] Error Binance Spot: {e}")
 
         # TRADES SPOT
         start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINANCE", "trades_spot")
@@ -792,11 +721,14 @@ def procesar_binance(db, uid, k, s):
 # 🟦 PROCESADOR BINANCE UM FUTURES (USDT-M) - v6.6.7.04
 # ==========================================================
 def procesar_binance_um_futures(db, uid, k, s):
+
     try:
         client = UMFutures(key=k, secret=s)
         cursor = db.cursor(dictionary=True)
 
         print(f"    [UM] Iniciando Binance UM Futures...")
+    # Dentro de procesar_binance_um_futures
+        cursor.execute("DELETE FROM sys_saldos_usuarios WHERE user_id = %s AND broker_name = 'BINANCE' AND tipo_cuenta = 'FUTURES'", (uid,))
 
         # 1. SALDOS (Igual que CM)
         acc = client.balance()
@@ -836,20 +768,14 @@ def procesar_binance_um_futures(db, uid, k, s):
                     val_quote_qty = float(t.get('quoteQty', 0))
                     
                     t_f = {
-                        'tradeId': str(t['id']),
-                        'orderId': str(t['orderId']),
-                        'symbol': t['symbol'],
-                        'side': t['side'],
-                        'positionSide': t.get('positionSide'),
-                        'price': float(t.get('price', 0)),
-                        'qty': val_qty,
-                        'quoteQty': val_quote_qty, 
-                        'commission': float(t.get('commission', 0)),
-                        'commissionAsset': t.get('commissionAsset'),
+                        'tradeId': str(t['id']),'orderId': str(t['orderId']),
+                        'symbol': t['symbol'],'side': t['side'],
+                        'positionSide': t.get('positionSide'),'price': float(t.get('price', 0)),
+                        'qty': val_qty,'quoteQty': val_quote_qty, 
+                        'commission': float(t.get('commission', 0)),'commissionAsset': t.get('commissionAsset'),
                         'realizedPnl': float(t.get('realizedPnl', 0)),
                         'fecha_sql': datetime.fromtimestamp(t['time']/1000).strftime('%Y-%m-%d %H:%M:%S'),
-                        'isMaker': t.get('maker', False),
-                        'es_futuro': True
+                        'isMaker': t.get('maker', False),'es_futuro': True
                     }
 
                     if registrar_trade(cursor, uid, t_f, item, "BINANCE"):
@@ -920,16 +846,8 @@ def procesar_binance_um_futures(db, uid, k, s):
                     """
 
                     cursor.execute(sql, (
-                        str(oo['orderId']),
-                        uid,
-                        "BINANCE_UM",
-                        info['id'] if info else None,
-                        symbol,
-                        oo['side'],
-                        oo['type'],
-                        float(oo.get('price', 0)),
-                        float(oo.get('origQty', 0)),
-                        0.0,
+                        str(oo['orderId']),uid,"BINANCE_UM",info['id'] if info else None,symbol,oo['side'],oo['type'],
+                        float(oo.get('price', 0)),float(oo.get('origQty', 0)),0.0,
                         datetime.fromtimestamp(
                             oo['time']/1000
                         ).strftime('%Y-%m-%d %H:%M:%S'),
@@ -940,9 +858,7 @@ def procesar_binance_um_futures(db, uid, k, s):
 
             except Exception as e:
                 print(f"[UM OPEN ERROR {symbol}] {e}")
-
         print(f"    [UM] Open Futuros Orders: {oo_count}")        
-
     except Exception as e:
         print(f"    [UM CRITICAL ERROR] {e}")
 
@@ -989,19 +905,11 @@ def procesar_binance_um_positions(db, uid, k, s):
                         last_update
                     ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                 """, (
-                    uid,
-                    "BINANCE_UM",
-                    info["id"] if info else None,
-                    p["symbol"],
-                    "LONG" if position_amt > 0 else "SHORT",
-                    position_amt,
-                    float(p.get("entryPrice", 0)),
-                    float(p.get("markPrice", 0)),
-                    float(p.get("unRealizedProfit", 0)),
-                    float(p.get("positionInitialMargin", 0)),
-                    float(p.get("maintMargin", 0)),
-                    int(p.get("leverage", 0)),
-                    p.get("marginType", "cross")
+                    uid,"BINANCE_UM",info["id"] if info else None,
+                    p["symbol"],"LONG" if position_amt > 0 else "SHORT",
+                    position_amt,float(p.get("entryPrice", 0)),float(p.get("markPrice", 0)),
+                    float(p.get("unRealizedProfit", 0)),float(p.get("positionInitialMargin", 0)),float(p.get("maintMargin", 0)),
+                    int(p.get("leverage", 0)),p.get("marginType", "cross")
                 ))
 
                 p_count += 1
@@ -1063,20 +971,14 @@ def procesar_binance_cm_futures(db, uid, k, s):
                     val_base_qty = float(t.get('baseQty', 0))
                     
                     t_f = {
-                        'tradeId': str(t['id']),
-                        'orderId': str(t['orderId']),
-                        'symbol': t['symbol'],
-                        'side': t['side'],
-                        'positionSide': t.get('positionSide'),
-                        'price': float(t.get('price', 0)),
-                        'qty': val_qty,
-                        'quoteQty': val_base_qty, # En CM usamos baseQty como referencia de volumen
-                        'commission': float(t.get('commission', 0)),
-                        'commissionAsset': t.get('commissionAsset'),
+                        'tradeId': str(t['id']),'orderId': str(t['orderId']),
+                        'symbol': t['symbol'],'side': t['side'],
+                        'positionSide': t.get('positionSide'),'price': float(t.get('price', 0)),
+                        'qty': val_qty,'quoteQty': val_base_qty, # En CM usamos baseQty como referencia de volumen
+                        'commission': float(t.get('commission', 0)),'commissionAsset': t.get('commissionAsset'),
                         'realizedPnl': float(t.get('realizedPnl', 0)),
                         'fecha_sql': datetime.fromtimestamp(t['time']/1000).strftime('%Y-%m-%d %H:%M:%S'),
-                        'isMaker': t.get('maker', False),
-                        'es_futuro': True
+                        'isMaker': t.get('maker', False),'es_futuro': True
                     }
 
                     if registrar_trade(cursor, uid, t_f, item, "BINANCE"):
@@ -1150,16 +1052,10 @@ def procesar_binance_cm_futures(db, uid, k, s):
                     """
 
                     cursor.execute(sql, (
-                        str(oo['orderId']),
-                        uid,
-                        "BINANCE_CM",
-                        info['id'] if info else None,
-                        symbol,
-                        oo['side'],
-                        oo['type'],
-                        float(oo.get('price', 0)),
-                        float(oo.get('origQty', 0)),
-                        0.0,
+                        str(oo['orderId']),uid,
+                        "BINANCE_CM",info['id'] if info else None,
+                        symbol,oo['side'],oo['type'],
+                        float(oo.get('price', 0)),float(oo.get('origQty', 0)),0.0,
                         datetime.fromtimestamp(
                             oo['time']/1000
                         ).strftime('%Y-%m-%d %H:%M:%S'),
@@ -1223,17 +1119,12 @@ def procesar_binance_cm_positions(db, uid, k, s):
                         last_update
                     ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                 """, (
-                    uid,
-                    "BINANCE_CM",
-                    info["id"] if info else None,
-                    p["symbol"],
+                    uid,"BINANCE_CM",
+                    info["id"] if info else None,p["symbol"],
                     "LONG" if position_amt > 0 else "SHORT",
-                    position_amt,
-                    float(p.get("entryPrice", 0)),
-                    float(p.get("markPrice", 0)),
-                    float(p.get("unRealizedProfit", 0)),
-                    float(p.get("positionInitialMargin", 0)),
-                    float(p.get("maintMargin", 0)),
+                    position_amt,float(p.get("entryPrice", 0)),
+                    float(p.get("markPrice", 0)),float(p.get("unRealizedProfit", 0)),
+                    float(p.get("positionInitialMargin", 0)),float(p.get("maintMargin", 0)),
                     int(p.get("leverage", 0)),
                     p.get("marginType", "cross")
                 ))
@@ -1246,16 +1137,9 @@ def procesar_binance_cm_positions(db, uid, k, s):
     except Exception as e:
         print(f"    [CM POS ERROR] {e}")
 
-import sys
-
-# Forzar a que los prints salgan rápido en GitHub
-sys.stdout.reconfigure(line_buffering=True)
-
-# ... (todo tu código anterior de procesar_binance, etc) ...
-
 # ==========================================================
-# 🚀 LÓGICA DE UN SOLO CICLO (CON LOCK)
-# Version 6.6.6.25
+# 🚀 LÓGICA DE UN SOLO CICLO (CON LOCK )
+# Version 6.6.6.26
 # ==========================================================
 def ejecutar_ciclo_completo():
     print(f"💎 MOTOR v6.6.6.25 - SALDOS + TRADES + OPEN ORDERS + POSITION BINANCE-BINGX")
