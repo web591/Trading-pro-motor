@@ -1188,14 +1188,15 @@ def ejecutar_ciclo_completo():
         print(f"    [CRITICAL] {e}")
 
     finally:
-        # 🔓 LIBERAR LOCK SIEMPRE
+        # 🔓 LIBERAR LOCK SIEMPRE CON SEGURIDAD
         try:
             if db and db.is_connected():
-                cursor = db.cursor()
-                liberar_lock(cursor, "LOCK_CONTABLE")
+                cursor_lock = db.cursor()
+                liberar_lock(cursor_lock, "LOCK_CONTABLE")
                 db.commit()
-        except:
-            pass
+                cursor_lock.close()
+        except Exception as e:
+            print(f"⚠️ No se pudo liberar lock: {e}")
 
         if db and db.is_connected(): 
             db.close()
