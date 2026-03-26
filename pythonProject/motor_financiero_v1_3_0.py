@@ -10,12 +10,26 @@ from urllib.parse import urlencode
 from hashlib import sha256
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
+import socket
+from datetime import datetime
 
 # Intento de cargar config si existe
 try:
     import config
 except ImportError:
     config = None
+
+def obtener_lock(cursor, lock_name, timeout=900): # 15 minutos para el financiero
+    host = "GITHUB_ACTION" if os.getenv('GITHUB_ACTIONS') == 'true' else socket.gethostname()
+    cursor.execute("DELETE FROM sys_locks WHERE lock_name = %s AND lock_time < NOW() - INTERVAL %s SECOND", (lock_name, timeout))
+    try:
+        cursor.execute("INSERT INTO sys_locks (lock_name, locked_by, lock_time) VALUES (%s, %s, NOW())", (lock_name, host))
+        return True
+    except:
+        return False
+
+def liberar_lock(cursor, lock_name):
+    cursor.execute("DELETE FROM sys_locks WHERE lock_name = %s", (lock_name,))
 
 # ==========================================================
 # 🚩 DISFRAZ Y SEGURIDAD
@@ -701,17 +715,25 @@ def bingx_withdraw(db, user_id, key, secret):
     print(f"    [OK] BINGX_WITHDRAW: {count} procesados.")
 
 # ==========================================================
-# 🚀 EJECUCIÓN PRINCIPAL
+# 🚀 EJECUCIÓN PRINCIPAL CON LOCK
 # ==========================================================
 def ejecutar_motor_financiero(db):
+    cursor = db.cursor(dictionary=True)
+
+    # 🔐 INTENTO DE LOCK GLOBAL
+    if not obtener_lock(cursor, "LOCK_FINANCIERO"):
+        print(f"\n⛔ [SKIP] LOCK_FINANCIERO activo en otro entorno. Abortando ciclo.")
+        return
+
+    # Commit inmediato para asegurar el lock en la DB
+    db.commit()
+
     print(f"\n{'='*60}")
-    print(f"💎 MOTOR FINANCIERO v1.3.0 - AUDITORÍA Y DIVIDENDOS")
+    print(f"💎 MOTOR FINANCIERO v1.3.1 - AUDITORÍA Y DIVIDENDOS")
     print(f"{'='*60}")
     
-    cursor = db.cursor(dictionary=True)
-    sql = "SELECT user_id, api_key, api_secret, broker_name FROM api_keys WHERE status=1"
-    
     try:
+        sql = "SELECT user_id, api_key, api_secret, broker_name FROM api_keys WHERE status=1"
         cursor.execute(sql)
         usuarios = cursor.fetchall()
         print(f"[*] Usuarios activos encontrados: {len(usuarios)}")
@@ -727,15 +749,15 @@ def ejecutar_motor_financiero(db):
 
             broker = u['broker_name'].upper()
 
+            # --- PROCESAMIENTO POR BROKER ---
             if broker == "BINANCE":
                 binance_income(db, u['user_id'], k, s)
-                binance_dividends(db, u['user_id'], k, s) # NUEVO: Dividendos de Earn
-                binance_mining(db, u['user_id'], k, s) # <--- I
+                binance_dividends(db, u['user_id'], k, s)
+                binance_mining(db, u['user_id'], k, s)
                 binance_deposits(db, u['user_id'], k, s)
                 binance_withdraw(db, u['user_id'], k, s)
                 binance_convert_history(db, u['user_id'], k, s)
                 binance_dust_log(db, u['user_id'], k, s)
-                # binance_transfers(db, u['user_id'], k, s)
 
             elif broker == "BINGX":
                 bingx_income(db, u['user_id'], k, s)
@@ -748,66 +770,78 @@ def ejecutar_motor_financiero(db):
     except Exception as e:
         print(f"\n[CRITICAL] Error en ejecución: {e}")
     
+    finally:
+        # 🔓 LIBERAR LOCK SIEMPRE
+        print("\n🔓 [SISTEMA] Liberando LOCK_FINANCIERO...")
+        liberar_lock(cursor, "LOCK_FINANCIERO")
+        db.commit()
+        cursor.close()
+
     print(f"\n{'='*60}")
     print(f"🏁 CICLO FINALIZADO")
     print(f"{'='*60}\n")
 
-# ... (Todo el código anterior se mantiene idéntico) ...
 # ==========================================================
-# 🧠 CONTROL DUAL PC vs GITHUB
+# 🧠 CONTROL DE HORARIOS (PC vs GITHUB)
 # ==========================================================
-import os
-from datetime import datetime
-
 def motor_debe_ejecutar():
-    entorno = os.getenv("RUN_ENV", "LOCAL")  # LOCAL o GITHUB
-    hora = datetime.utcnow().hour
+    """
+    Decide si el motor debe correr según el entorno y la hora.
+    Evita que tu PC y GitHub trabajen al mismo tiempo.
+    """
+    entorno = "GITHUB" if os.getenv('GITHUB_ACTIONS') == 'true' else "PC"
+    hora = datetime.now().hour # Necesitas: from datetime import datetime
 
-    # Si es LOCAL (tu PC) → siempre corre
-    if entorno == "LOCAL":
-        print("[MODE] Ejecutando en PC local")
-        return True
-
-    # Si es GITHUB → solo corre en ciertas horas
+    # Si es GITHUB → solo corre en ciertas horas (ejemplo: madrugada)
     if entorno == "GITHUB":
-        print("[MODE] Ejecutando en GitHub")
-
-        # Ventana de respaldo (cuando tu PC probablemente esté apagada)
+        # Ajusta estas horas a cuando tu PC esté apagada
         if hora in [3, 4, 5]:  
             return True
         else:
-            print("[SKIP] GitHub fuera de horario")
             return False
 
+    # Si es PC → Puedes poner que siempre corra o excluir las horas de GitHub
+    if entorno == "PC":
+        if hora in [3, 4, 5]:
+            print("[SKIP] Mi PC cede el turno a GitHub en este horario.")
+            return False
+        return True
+
     return True
+
 # ==========================================================
-# 🚀 EJECUCIÓN PRINCIPAL CON BUCLE DE 1 HORA (DUAL)
+# 🚀 EJECUCIÓN PRINCIPAL DUAL
 # ==========================================================
 if __name__ == "__main__":
-    while True:
+    # Detectar si estamos en GitHub para no entrar en bucle infinito
+    is_github = os.getenv('GITHUB_ACTIONS') == 'true'
 
-        # 🧠 CONTROL PC vs GITHUB
-        if not motor_debe_ejecutar():
-            print("[SKIP] Motor no ejecutado. Reintentando en 10 min...")
-            time.sleep(600)  # espera 10 minutos
-            continue
-
+    if is_github:
+        # MODO CLOUD: Una sola ejecución
         db = None
         try:
-            # Iniciamos conexión al principio de cada ciclo para evitar timeouts
             db = mysql.connector.connect(**config.DB_CONFIG)
-            
             ejecutar_motor_financiero(db)
-            
-            # Cerramos conexión al terminar el trabajo del ciclo
+        finally:
             if db and db.is_connected():
                 db.close()
-                print("[*] Conexión a DB cerrada. Esperando 1 hora...")
+    else:
+        # MODO LOCAL (PC): Bucle de 1 hora
+        while True:
+            if not motor_debe_ejecutar():
+                print("[SKIP] GitHub fuera de horario o modo local desactivado. Reintentando en 10 min...")
+                time.sleep(600)
+                continue
 
-        except Exception as e:
-            print(f"\n[ERROR EN EL CICLO] {e}")
-            if db and db.is_connected():
-                db.close()
-        
-        # Espera de 3600 segundos (1 hora)
-        time.sleep(3600)
+            db = None
+            try:
+                db = mysql.connector.connect(**config.DB_CONFIG)
+                ejecutar_motor_financiero(db)
+            except Exception as e:
+                print(f"\n[ERROR EN EL CICLO] {e}")
+            finally:
+                if db and db.is_connected():
+                    db.close()
+                    print("[*] Conexión cerrada. Esperando 1 hora...")
+            
+            time.sleep(3600)
