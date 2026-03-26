@@ -36,3 +36,7 @@ C:\Users\ajafa>
    ✅ Apple Inc.      | $  247.9900 |  -0.39% | yahoo_sym
    ✅ AMZN            | $  207.5300 |   0.08% | binance_usdt_future
    ✅ AMZN-USDT       | $  205.5600 |  -0.88% | bingx_stock
+
+
+
+
