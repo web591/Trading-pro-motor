@@ -6,13 +6,24 @@ import yfinance as yf
 from datetime import datetime
 import os
 
-# Importamos la configuración. 
-# Si PROXY_URL no existe en config.py, el motor lo ignorará (ideal para tu PC)
+# --- REEMPLAZA TU BLOQUE DE IMPORTACIÓN POR ESTE ---
 try:
-    from config import DB_CONFIG, FINNHUB_KEY, PROXY_URL
+    import config
+    DB_CONFIG = config.DB_CONFIG
+    FINNHUB_KEY = config.FINNHUB_KEY
+    # Buscamos PROXY_URL. Si no existe en tu config local, será None.
+    PROXY_URL = getattr(config, 'PROXY_URL', None)
+    
+    # Debug para saber si el proxy entró (solo se ve en el log)
+    if PROXY_URL:
+        # Mostramos solo el inicio para seguridad
+        print(f"🌐 [SISTEMA] Proxy detectado: {PROXY_URL[:15]}...")
+    else:
+        print("🏠 [SISTEMA] Sin proxy (Modo Local/Directo)")
+        
 except ImportError:
-    from config import DB_CONFIG, FINNHUB_KEY
-    PROXY_URL = None
+    print("❌ [ERROR] No se encontró config.py. Asegúrate de que el Loader lo generó.")
+    sys.exit(1)
 
 # ==========================================================
 # 💎 PRICE SYNC V1.03 - MONITOR DE PRECIOS REAL (MODO DUAL)
@@ -30,8 +41,19 @@ def actualizar_precios():
     # Configuración de Proxy para Exchanges (Binance/BingX)
     px = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
 
+    # --- INICIO BLOQUE DE DEBUG (COPIA DESDE AQUÍ) ---
+    print(f"DEBUG: Valor de PROXY_URL: '{PROXY_URL}'")
+    try:
+        # Le preguntamos a una web externa qué IP estamos usando realmente
+        test_res = requests.get("https://api.ipify.org?format=json", proxies=px, timeout=10).json()
+        print(f"📡 [DEBUG] El motor está saliendo por la IP: {test_res['ip']}")
+    except Exception as e:
+        print(f"📡 [DEBUG] El Proxy falló o no conectó: {e}")
+    # --- FIN BLOQUE DE DEBUG ---
+
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
+        # ... resto del código ...
         cur = conn.cursor(dictionary=True)
 
         cur.execute("SELECT id, nombre_comun, motor_fuente, ticker_motor FROM sys_traductor_simbolos WHERE is_active = 1")
