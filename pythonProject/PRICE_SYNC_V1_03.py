@@ -1,67 +1,76 @@
 import mysql.connector
 import time
 import requests
-import random
 import yfinance as yf
 from datetime import datetime
 import os
+import sys
 
-# --- REEMPLAZA TU BLOQUE DE IMPORTACIÓN POR ESTE ---
+# --- IMPORTACIÓN DUAL ---
 try:
     import config
     DB_CONFIG = config.DB_CONFIG
     FINNHUB_KEY = config.FINNHUB_KEY
-    # Buscamos PROXY_URL. Si no existe en tu config local, será None.
     PROXY_URL = getattr(config, 'PROXY_URL', None)
-    
-    # Debug para saber si el proxy entró (solo se ve en el log)
     if PROXY_URL:
-        # Mostramos solo el inicio para seguridad
         print(f"🌐 [SISTEMA] Proxy detectado: {PROXY_URL[:15]}...")
-    else:
-        print("🏠 [SISTEMA] Sin proxy (Modo Local/Directo)")
-        
 except ImportError:
-    print("❌ [ERROR] No se encontró config.py. Asegúrate de que el Loader lo generó.")
+    print("❌ [ERROR] No se encontró config.py.")
     sys.exit(1)
 
-# ==========================================================
-# 💎 PRICE SYNC V1.03 - MONITOR DE PRECIOS REAL (MODO DUAL)
-# ==========================================================
+# --- FUNCIONES DE LOCK ---
+def obtener_lock(cursor, lock_name, identifier):
+    """ Intenta obtener un bloqueo en la tabla sys_locks """
+    # Limpiamos locks de más de 10 min por si hubo un crash previo
+    cursor.execute("DELETE FROM sys_locks WHERE lock_time < NOW() - INTERVAL 10 MINUTE")
+    try:
+        cursor.execute(
+            "INSERT INTO sys_locks (lock_name, locked_by, lock_time) VALUES (%s, %s, NOW())",
+            (lock_name, identifier)
+        )
+        return True
+    except:
+        return False
 
-def get_headers():
-    return {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Referer': 'https://finance.yahoo.com/'
-    }
+def liberar_lock_manual():
+    """ Función de emergencia para limpiar el lock si el script se detiene """
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM sys_locks WHERE lock_name = 'price_sync_lock'")
+        conn.commit()
+        conn.close()
+        print("🔓 [SISTEMA] Lock liberado correctamente.")
+    except:
+        pass
 
+# --- MOTOR PRINCIPAL ---
 def actualizar_precios():
     conn = None
-    # Configuración de Proxy para Exchanges (Binance/BingX)
     px = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
-
-    # --- INICIO BLOQUE DE DEBUG (COPIA DESDE AQUÍ) ---
-    print(f"DEBUG: Valor de PROXY_URL: '{PROXY_URL}'")
-    try:
-        # Le preguntamos a una web externa qué IP estamos usando realmente
-        test_res = requests.get("https://api.ipify.org?format=json", proxies=px, timeout=10).json()
-        print(f"📡 [DEBUG] El motor está saliendo por la IP: {test_res['ip']}")
-    except Exception as e:
-        print(f"📡 [DEBUG] El Proxy falló o no conectó: {e}")
-    # --- FIN BLOQUE DE DEBUG ---
+    identificador = "GITHUB_ACTION" if os.getenv('GITHUB_ACTIONS') == 'true' else "LOCAL_PC"
 
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
-        # ... resto del código ...
         cur = conn.cursor(dictionary=True)
+
+        if not obtener_lock(cur, 'price_sync_lock', identificador):
+            # Verificamos quién tiene el lock para informar
+            cur.execute("SELECT locked_by, lock_time FROM sys_locks WHERE lock_name = 'price_sync_lock'")
+            info = cur.fetchone()
+            print(f"⚠️ [LOCK] Ocupado por {info['locked_by']} desde {info['lock_time']}. Abortando...")
+            return False # Retornamos False para saber que no se ejecutó
+        
+        conn.commit() 
 
         cur.execute("SELECT id, nombre_comun, motor_fuente, ticker_motor FROM sys_traductor_simbolos WHERE is_active = 1")
         activos = cur.fetchall()
 
         if not activos:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 💤 Sin activos para monitorear.")
-            return
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 💤 Sin activos.")
+            cur.execute("DELETE FROM sys_locks WHERE lock_name = 'price_sync_lock'")
+            conn.commit()
+            return True
 
         print(f"\n🔄 [SYNC {datetime.now().strftime('%H:%M:%S')}] Actualizando {len(activos)} pares...")
 
@@ -70,42 +79,23 @@ def actualizar_precios():
             precio, cambio, volumen = None, 0, 0
             
             try:
-                # ---------------------------------------------------------
-                # MOTOR A: BINANCE (Con Proxy Selectivo)
-                # ---------------------------------------------------------
+                # LÓGICA DE MOTORES (BINANCE, BINGX, YAHOO)
                 if 'binance' in fuente:
-                    if "spot" in fuente:
-                        base_url = "https://api.binance.com/api/v3"
-                    elif "coin_future" in fuente or "_perp" in ticker.lower():
-                        base_url = "https://dapi.binance.com/dapi/v1"
-                    else:
-                        base_url = "https://fapi.binance.com/fapi/v1"
-                    
-                    endpoint = f"{base_url}/ticker/24hr?symbol={ticker}"
-                    # Se aplica proxy solo aquí para evitar bloqueos de IP
-                    res = requests.get(endpoint, proxies=px, timeout=10).json()
-                    
+                    if "spot" in fuente: base_url = "https://api.binance.com/api/v3"
+                    elif "coin_future" in fuente or "_perp" in ticker.lower(): base_url = "https://dapi.binance.com/dapi/v1"
+                    else: base_url = "https://fapi.binance.com/fapi/v1"
+                    res = requests.get(f"{base_url}/ticker/24hr?symbol={ticker}", proxies=px, timeout=10).json()
                     if isinstance(res, list) and len(res) > 0: res = res[0]
                     if 'lastPrice' in res:
-                        precio = float(res['lastPrice'])
-                        cambio = float(res.get('priceChangePercent', 0))
-                        volumen = float(res.get('volume', 0))
+                        precio, cambio, volumen = float(res['lastPrice']), float(res.get('priceChangePercent', 0)), float(res.get('volume', 0))
 
-                # ---------------------------------------------------------
-                # MOTOR B: BINGX (Con Proxy Selectivo)
-                # ---------------------------------------------------------
                 elif 'bingx' in fuente:
                     url = f"https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol={ticker}"
                     res = requests.get(url, proxies=px, timeout=10).json()
                     if 'data' in res and res['data']:
                         d = res['data']
-                        precio = float(d.get('lastPrice', 0))
-                        cambio = float(d.get('priceChangePercent', 0))
-                        volumen = float(d.get('volume24h', 0))
+                        precio, cambio, volumen = float(d.get('lastPrice', 0)), float(d.get('priceChangePercent', 0)), float(d.get('volume24h', 0))
 
-                # ---------------------------------------------------------
-                # MOTOR C: YAHOO FINANCE (Conexión Directa)
-                # ---------------------------------------------------------
                 elif 'yahoo' in fuente:
                     tk = yf.Ticker(ticker)
                     try:
@@ -114,28 +104,13 @@ def actualizar_precios():
                     except:
                         hist = tk.history(period="1d")
                         if not hist.empty:
-                            precio = hist['Close'].iloc[-1]
-                            volumen = hist['Volume'].iloc[-1]
-
+                            precio, volumen = hist['Close'].iloc[-1], hist['Volume'].iloc[-1]
                     hist_2d = tk.history(period="2d")
                     if len(hist_2d) > 1:
                         prev_close = hist_2d['Close'].iloc[-2]
-                        if prev_close > 0 and precio:
-                            cambio = ((precio - prev_close) / prev_close) * 100
+                        if prev_close > 0 and precio: cambio = ((precio - prev_close) / prev_close) * 100
 
-                # ---------------------------------------------------------
-                # MOTOR D: FINNHUB
-                # ---------------------------------------------------------
-                elif 'finnhub' in fuente:
-                    url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_KEY}"
-                    res = requests.get(url, timeout=5).json()
-                    if res.get('c') and res.get('c') != 0:
-                        precio = float(res.get('c'))
-                        cambio = float(res.get('dp', 0))
-
-                # ---------------------------------------------------------
                 # GUARDADO EN BD
-                # ---------------------------------------------------------
                 if precio is not None and precio > 0:
                     sql = """
                         INSERT INTO sys_precios_activos (traductor_id, price, change_24h, volume_24h, source, last_update)
@@ -145,18 +120,21 @@ def actualizar_precios():
                             volume_24h = VALUES(volume_24h), source = VALUES(source), last_update = NOW()
                     """
                     cur.execute(sql, (tid, precio, cambio, volumen, fuente))
+                    conn.commit() 
                     print(f"   ✅ {nombre[:15]:<15} | ${precio:>10.4f} | {cambio:>6.2f}% | {fuente}")
-                else:
-                    print(f"   ⚠️ {nombre} ({ticker}) | Sin datos.")
 
             except Exception as e:
                 print(f"   ❌ Error en {nombre}: {str(e)[:50]}...")
 
+        # 🔓 LIBERAR AL TERMINAR
+        cur.execute("DELETE FROM sys_locks WHERE lock_name = 'price_sync_lock'")
         conn.commit()
         cur.close()
+        return True
 
     except Exception as e:
         print(f"⚠️ Error General: {e}")
+        return False
     finally:
         if conn and conn.is_connected(): conn.close()
 
@@ -164,16 +142,17 @@ if __name__ == "__main__":
     print("💎 MOTOR DE PRECIOS V1.03 - MODO DUAL ACTIVO")
     is_github = os.getenv('GITHUB_ACTIONS') == 'true'
     
-    if is_github:
-        print("🤖 [MODO CLOUD] Ejecutando ráfaga única...")
-        actualizar_precios()
-        print("🏁 Ciclo Cloud finalizado.")
-    else:
-        print("💻 [MODO LOCAL] Bucle continuo (30s)...")
-        try:
+    try:
+        if is_github:
+            actualizar_precios()
+        else:
             while True:
                 actualizar_precios()
-                print(f"\n✅ {datetime.now().strftime('%H:%M:%S')} - Esperando 30s...")
                 time.sleep(30)
-        except KeyboardInterrupt:
-            print("\n🛑 Detenido.")
+    except KeyboardInterrupt:
+        print("\n🛑 Detención manual detectada.")
+    finally:
+        # Esto se ejecuta SIEMPRE al cerrar (error, crash o Ctrl+C)
+        print("🧹 Limpiando recursos antes de salir...")
+        liberar_lock_manual()
+        print("👋 Adiós.")
