@@ -6,7 +6,31 @@ import mysql.connector
 from datetime import datetime
 from config import FINNHUB_KEY, DB_CONFIG, ALPHA_VANTAGE_KEY
 import os
+import socket
+import sys
 
+# ==========================================================
+# 🔐 SISTEMA DE LOCK (PROTECCIÓN CONTRA DUPLICADOS)
+# ==========================================================
+def obtener_lock(cursor, lock_name, timeout=300):
+    """
+    Intenta obtener un candado en la DB para que solo una instancia 
+    del Maestro corra a la vez.
+    """
+    host = "GITHUB_ACTION" if os.getenv('GITHUB_ACTIONS') == 'true' else socket.gethostname()
+    
+    # Limpiar locks viejos (más de 5 minutos) por si hubo un crash anterior
+    cursor.execute("DELETE FROM sys_locks WHERE lock_name = %s AND lock_time < NOW() - INTERVAL %s SECOND", (lock_name, timeout))
+    
+    try:
+        cursor.execute("INSERT INTO sys_locks (lock_name, locked_by, lock_time) VALUES (%s, %s, NOW())", (lock_name, host))
+        return True
+    except:
+        return False
+
+def liberar_lock(cursor, lock_name):
+    """Elimina el candado de la base de datos."""
+    cursor.execute("DELETE FROM sys_locks WHERE lock_name = %s", (lock_name,))
 # ==========================================================
 # 🚩 CONFIGURACIÓN
 # ==========================================================
@@ -390,10 +414,9 @@ def ejecutar_un_ciclo_maestro(conn):
             cur_u.execute("SELECT id, underlying FROM sys_traductor_simbolos WHERE underlying = %s LIMIT 1", (tk_busqueda,))
             row = cur_u.fetchone()
             underlying_consulta = row["underlying"].upper() if row else tk_busqueda.upper()
-            trad_id = row["id"] if row else None
             cur_u.close()
 
-            # --- MEMORIA GLOBAL / INTERROGACIÓN ---
+            # --- MEMORIA GLOBAL ---
             cur_cache = conn.cursor()
             cur_cache.execute("SELECT 1 FROM sys_busqueda_resultados WHERE underlying = %s LIMIT 1", (underlying_consulta,))
             cache_hit = cur_cache.fetchone()
@@ -418,40 +441,59 @@ def ejecutar_un_ciclo_maestro(conn):
                     except: continue
                 guardar_en_resultados_db(conn, consolidado, id_tarea, tk_busqueda, underlying_consulta)
             
-            return True # Retornamos True si procesó algo
+            return True 
         else:
             print(".", end="", flush=True)
-            return False # No había tareas
+            return False 
 
     except Exception as e:
         print(f"⚠️ Error en ciclo: {e}")
         return False
 
 # ==========================================================
-# 🚀 EJECUCIÓN DUAL (PC vs GITHUB)
+# 🚀 EJECUCIÓN DUAL (PC vs GITHUB) CON LOCK
 # ==========================================================
 if __name__ == "__main__":
+    print(f"\n{'='*60}")
     print("💎 MOTOR MAESTRO V2.23 - MODO DUAL ACTIVO")
+    print(f"{'='*60}")
     
-    # Detectar si estamos en GitHub Actions
     is_github = os.getenv('GITHUB_ACTIONS') == 'true'
-    
     conn = mysql.connector.connect(**DB_CONFIG)
+    cursor_lock = conn.cursor()
 
-    if is_github:
-        print("🤖 [MODO CLOUD] Ejecutando búsqueda de tarea pendiente...")
-        # Ejecutamos una vez. Si quieres que procese más de una en la ráfaga,
-        # puedes poner un pequeño for i in range(5) aquí.
-        ejecutar_un_ciclo_maestro(conn)
-        print("\n🏁 Ciclo Cloud finalizado.")
-    else:
-        print("💻 [MODO LOCAL] Iniciando bucle infinito...")
-        try:
-            while True:
-                ejecutar_un_ciclo_maestro(conn)
-                time.sleep(10)
-        except KeyboardInterrupt:
-            print("\n🛑 Motor detenido por el usuario.")
-    
-    if conn.is_connected():
+    # 🔐 INTENTO DE OBTENER EL LOCK
+    if not obtener_lock(cursor_lock, "LOCK_MAESTRO"):
+        print("⛔ [SKIP] LOCK_MAESTRO activo en otro entorno. Abortando.")
+        cursor_lock.close()
         conn.close()
+        import sys
+        sys.exit(0)
+
+    conn.commit() # Confirmar el lock en la DB
+    cursor_lock.close()
+
+    try:
+        if is_github:
+            print("🤖 [MODO CLOUD] Ejecutando búsqueda de tarea pendiente...")
+            ejecutar_un_ciclo_maestro(conn)
+            print("\n🏁 Ciclo Cloud finalizado.")
+        else:
+            print("💻 [MODO LOCAL] Iniciando bucle infinito...")
+            try:
+                while True:
+                    ejecutar_un_ciclo_maestro(conn)
+                    time.sleep(10)
+            except KeyboardInterrupt:
+                print("\n🛑 Motor detenido por el usuario.")
+    
+    finally:
+        # 🔓 LIBERAR LOCK SIEMPRE AL SALIR
+        print("\n🔓 Liberando LOCK_MAESTRO...")
+        cursor_rel = conn.cursor()
+        liberar_lock(cursor_rel, "LOCK_MAESTRO")
+        conn.commit()
+        cursor_rel.close()
+        
+        if conn.is_connected():
+            conn.close()
