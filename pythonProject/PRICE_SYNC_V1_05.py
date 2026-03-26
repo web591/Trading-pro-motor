@@ -21,9 +21,8 @@ except ImportError:
 # --- FUNCIONES DE LOCK ---
 def obtener_lock(cursor, lock_name, identifier):
     """ Intenta obtener un bloqueo en la tabla sys_locks """
-    # Limpiar locks viejos (más de 10 minutos) por si hubo un crash
+    # Limpiamos locks de más de 10 min por si hubo un crash previo
     cursor.execute("DELETE FROM sys_locks WHERE lock_time < NOW() - INTERVAL 10 MINUTE")
-    
     try:
         cursor.execute(
             "INSERT INTO sys_locks (lock_name, locked_by, lock_time) VALUES (%s, %s, NOW())",
@@ -33,9 +32,17 @@ def obtener_lock(cursor, lock_name, identifier):
     except:
         return False
 
-def liberar_lock(cursor, lock_name):
-    """ Libera el bloqueo """
-    cursor.execute("DELETE FROM sys_locks WHERE lock_name = %s", (lock_name,))
+def liberar_lock_manual():
+    """ Función de emergencia para limpiar el lock si el script se detiene """
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM sys_locks WHERE lock_name = 'price_sync_lock'")
+        conn.commit()
+        conn.close()
+        print("🔓 [SISTEMA] Lock liberado correctamente.")
+    except:
+        pass
 
 # --- MOTOR PRINCIPAL ---
 def actualizar_precios():
@@ -47,21 +54,23 @@ def actualizar_precios():
         conn = mysql.connector.connect(**DB_CONFIG)
         cur = conn.cursor(dictionary=True)
 
-        # 🛡️ INTENTO DE LOCK
         if not obtener_lock(cur, 'price_sync_lock', identificador):
-            print(f"⚠️ [LOCK] El motor ya está siendo ejecutado por otra instancia. Abortando...")
-            return
+            # Verificamos quién tiene el lock para informar
+            cur.execute("SELECT locked_by, lock_time FROM sys_locks WHERE lock_name = 'price_sync_lock'")
+            info = cur.fetchone()
+            print(f"⚠️ [LOCK] Ocupado por {info['locked_by']} desde {info['lock_time']}. Abortando...")
+            return False # Retornamos False para saber que no se ejecutó
         
-        conn.commit() # Confirmamos el lock en la BD
+        conn.commit() 
 
         cur.execute("SELECT id, nombre_comun, motor_fuente, ticker_motor FROM sys_traductor_simbolos WHERE is_active = 1")
         activos = cur.fetchall()
 
         if not activos:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 💤 Sin activos.")
-            liberar_lock(cur, 'price_sync_lock')
+            cur.execute("DELETE FROM sys_locks WHERE lock_name = 'price_sync_lock'")
             conn.commit()
-            return
+            return True
 
         print(f"\n🔄 [SYNC {datetime.now().strftime('%H:%M:%S')}] Actualizando {len(activos)} pares...")
 
@@ -70,7 +79,7 @@ def actualizar_precios():
             precio, cambio, volumen = None, 0, 0
             
             try:
-                # LÓGICA DE MOTORES (BINANCE, BINGX, YAHOO, FINNHUB)
+                # LÓGICA DE MOTORES (BINANCE, BINGX, YAHOO)
                 if 'binance' in fuente:
                     if "spot" in fuente: base_url = "https://api.binance.com/api/v3"
                     elif "coin_future" in fuente or "_perp" in ticker.lower(): base_url = "https://dapi.binance.com/dapi/v1"
@@ -111,29 +120,39 @@ def actualizar_precios():
                             volume_24h = VALUES(volume_24h), source = VALUES(source), last_update = NOW()
                     """
                     cur.execute(sql, (tid, precio, cambio, volumen, fuente))
-                    conn.commit() # Commit por cada registro para evitar Lock Wait Timeouts
+                    conn.commit() 
                     print(f"   ✅ {nombre[:15]:<15} | ${precio:>10.4f} | {cambio:>6.2f}% | {fuente}")
 
             except Exception as e:
                 print(f"   ❌ Error en {nombre}: {str(e)[:50]}...")
 
-        # 🔓 LIBERAR LOCK AL TERMINAR
-        liberar_lock(cur, 'price_sync_lock')
+        # 🔓 LIBERAR AL TERMINAR
+        cur.execute("DELETE FROM sys_locks WHERE lock_name = 'price_sync_lock'")
         conn.commit()
         cur.close()
+        return True
 
     except Exception as e:
         print(f"⚠️ Error General: {e}")
+        return False
     finally:
         if conn and conn.is_connected(): conn.close()
 
 if __name__ == "__main__":
-    print("💎 MOTOR DE PRECIOS V1.03 - MODO DUAL CON LOCK")
+    print("💎 MOTOR DE PRECIOS V1.03 - MODO DUAL ACTIVO")
     is_github = os.getenv('GITHUB_ACTIONS') == 'true'
     
-    if is_github:
-        actualizar_precios()
-    else:
-        while True:
+    try:
+        if is_github:
             actualizar_precios()
-            time.sleep(30)
+        else:
+            while True:
+                actualizar_precios()
+                time.sleep(30)
+    except KeyboardInterrupt:
+        print("\n🛑 Detención manual detectada.")
+    finally:
+        # Esto se ejecuta SIEMPRE al cerrar (error, crash o Ctrl+C)
+        print("🧹 Limpiando recursos antes de salir...")
+        liberar_lock_manual()
+        print("👋 Adiós.")
