@@ -11,26 +11,33 @@ import config
 import sys
 import socket
 
-def obtener_lock(cursor, lock_name, timeout=120):
-    host = socket.gethostname()
+def obtener_lock(cursor, lock_name, timeout=600):
+    # Identificamos si es GitHub o Local para el log de la DB
+    host = "GITHUB_ACTION" if os.getenv('GITHUB_ACTIONS') == 'true' else socket.gethostname()
 
-    cursor.execute("""
-        DELETE FROM sys_locks
-        WHERE lock_name = %s
+    # Limpiamos locks viejos (10 min) para evitar bloqueos por cortes de luz o crashes
+    cursor.execute(f"""
+        DELETE FROM sys_locks 
+        WHERE lock_name = %s 
         AND lock_time < NOW() - INTERVAL %s SECOND
     """, (lock_name, timeout))
 
     try:
+        # Intentamos insertar el nuevo lock
         cursor.execute("""
-            INSERT INTO sys_locks (lock_name, locked_by, lock_time)
+            INSERT INTO sys_locks (lock_name, locked_by, lock_time) 
             VALUES (%s, %s, NOW())
         """, (lock_name, host))
         return True
     except:
+        # Si falla el INSERT es porque el lock ya existe y está vigente
         return False
 
 def liberar_lock(cursor, lock_name):
-    cursor.execute("DELETE FROM sys_locks WHERE lock_name = %s", (lock_name,))
+    try:
+        cursor.execute("DELETE FROM sys_locks WHERE lock_name = %s", (lock_name,))
+    except Exception as e:
+        print(f"⚠️ Error al liberar lock: {e}")
 
 # Forzar a que los prints salgan rápido en GitHub
 sys.stdout.reconfigure(line_buffering=True)
@@ -668,15 +675,27 @@ def procesar_bingx_positions(db, uid, ak, as_):
 # ==========================================================
 # 🟨 PROCESADOR BINANCE (CON LOGS ESTRATÉGICOS)
 # ==========================================================
+# ==========================================================
+# 🟨 PROCESADOR BINANCE (CORREGIDO V6.6.6.26)
+# ==========================================================
 def procesar_binance(db, uid, k, s):
+    # El cursor se define al principio para que esté disponible en todo el proceso
+    cursor = db.cursor(dictionary=True)
+    
+    # 1. Configurar Cliente con Proxy (Clave para GitHub)
+    proxies = {
+        'http': os.getenv('PROXY_URL'),
+        'https': os.getenv('PROXY_URL')
+    }
+    
     try:
-        client = Client(k, s)
-        cursor = db.cursor(dictionary=True)
+        # Intentamos conectar a Binance
+        client = Client(k, s, requests_params={'proxies': proxies, 'timeout': 10})
         
-        # --- EFECTO SNAPSHOT ---
+        # --- SALDOS SPOT ---
+        print(f"    >>> SPOT BINANCE USER {uid} <<<")
         cursor.execute("DELETE FROM sys_saldos_usuarios WHERE user_id = %s AND broker_name = 'BINANCE' AND tipo_cuenta = 'SPOT'", (uid,))
-
-        # SALDOS
+        
         acc = client.get_account()
         s_count = 0
         for b in acc['balances']:
@@ -687,11 +706,8 @@ def procesar_binance(db, uid, k, s):
                 s_count += 1
         print(f"    [OK] Binance Saldos actualizado: {s_count} activos.")
         db.commit()
-        print(f"    [OK] Binance Spot Snapshot completado.")
-    except Exception as e:
-        print(f"    [!] Error Binance Spot: {e}")
 
-        # TRADES SPOT
+        # --- TRADES SPOT ---
         start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINANCE", "trades_spot")
         cursor.execute("SELECT * FROM sys_traductor_simbolos WHERE motor_fuente = 'binance_spot'")
         diccionario = cursor.fetchall()
@@ -700,13 +716,26 @@ def procesar_binance(db, uid, k, s):
             try:
                 raw_trades = client.get_my_trades(symbol=item['ticker_motor'], startTime=start_ts)
                 for t in sorted(raw_trades, key=lambda x: x['time']):
-                    t_f = {'tradeId': str(t['id']),'orderId': str(t['orderId']), 'symbol': t['symbol'], 'side': 'BUY' if t['isBuyer'] else 'SELL', 'price': float(t['price']), 'qty': float(t['qty']), 'quoteQty': float(t['quoteQty']), 'commission': float(t['commission']), 'commissionAsset': t['commissionAsset'], 'fecha_sql': datetime.fromtimestamp(t['time']/1000).strftime('%Y-%m-%d %H:%M:%S')}
+                    t_f = {
+                        'tradeId': str(t['id']),
+                        'orderId': str(t['orderId']), 
+                        'symbol': t['symbol'], 
+                        'side': 'BUY' if t['isBuyer'] else 'SELL', 
+                        'price': float(t['price']), 
+                        'qty': float(t['qty']), 
+                        'quoteQty': float(t['quoteQty']), 
+                        'commission': float(t['commission']), 
+                        'commissionAsset': t['commissionAsset'], 
+                        'fecha_sql': datetime.fromtimestamp(t['time']/1000).strftime('%Y-%m-%d %H:%M:%S')
+                    }
                     if registrar_trade(cursor, uid, t_f, item, "BINANCE"): t_count += 1
-            except: continue
+            except: 
+                continue
+        
         actualizar_punto_sincro(cursor, uid, "BINANCE", "trades_spot", int(time.time()*1000))
         print(f"    [SPOT] Binance Trades: {t_count} nuevos procesados.")
 
-        # OPEN ORDERS SPOT
+        # --- OPEN ORDERS ---
         cursor.execute("DELETE FROM sys_open_orders_spot WHERE user_id = %s AND broker_name = 'BINANCE'", (uid,))
         open_orders = client.get_open_orders()
         for oo in open_orders:
@@ -715,8 +744,10 @@ def procesar_binance(db, uid, k, s):
             cursor.execute(sql_oo, (str(oo['orderId']), uid, "BINANCE", info['id'] if info else None, oo['symbol'], oo['side'], oo['type'], float(oo['price']), float(oo['origQty']), 0.0, datetime.fromtimestamp(oo['time']/1000).strftime('%Y-%m-%d %H:%M:%S'), 'ABIERTA'))
         print(f"    [OK] Binance Spot Open Orders: {len(open_orders)} registradas.")
 
-    except Exception as e: print(f"    [!] Error Binance User {uid}: {e}")
-
+    except Exception as e:
+        print(f"    [!] Error Crítico en Binance User {uid}: {e}")
+    finally:
+        cursor.close() # Siempre cerramos el cursor de este usuario
 # ==========================================================
 # 🟦 PROCESADOR BINANCE UM FUTURES (USDT-M) - v6.6.7.04
 # ==========================================================
@@ -1195,8 +1226,9 @@ def ejecutar_ciclo_completo():
                 liberar_lock(cursor_lock, "LOCK_CONTABLE")
                 db.commit()
                 cursor_lock.close()
-        except Exception as e:
-            print(f"⚠️ No se pudo liberar lock: {e}")
+                print("🔓 [LOCK] Liberado correctamente.")
+        except Exception as ex:
+            print(f"⚠️ No se pudo liberar lock: {ex}")
 
         if db and db.is_connected(): 
             db.close()
