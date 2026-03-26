@@ -1,35 +1,55 @@
-# fundamtenales_engine.py - Version 1.6
-# Modificaciones: Lógica de reintento tras 24h y límite de 5 intentos para Alpha Vantage.
+# fundamentales_engine.py - Version 1.7
+# Modificaciones: Sistema de LOCK, contadores estratégicos y optimización de logs.
 
 import mysql.connector
 import requests
 import yfinance as yf
 import time
+import os
+import socket
 from config import DB_CONFIG, ALPHA_VANTAGE_KEY
 
 def conectar_db():
     return mysql.connector.connect(**DB_CONFIG)
 
-# =========================
-# YAHOO (SIN CAMBIOS)
-# =========================
+# ==========================================================
+# 🔐 SISTEMA DE LOCK
+# ==========================================================
+def obtener_lock(cursor, lock_name, timeout=3600):
+    host = "GITHUB_ACTION" if os.getenv('GITHUB_ACTIONS') == 'true' else socket.gethostname()
+    cursor.execute("DELETE FROM sys_locks WHERE lock_name = %s AND lock_time < NOW() - INTERVAL %s SECOND", (lock_name, timeout))
+    try:
+        cursor.execute("INSERT INTO sys_locks (lock_name, locked_by, lock_time) VALUES (%s, %s, NOW())", (lock_name, host))
+        return True
+    except:
+        return False
 
+def liberar_lock(cursor, lock_name):
+    cursor.execute("DELETE FROM sys_locks WHERE lock_name = %s", (lock_name,))
+
+# =========================
+# YAHOO (CON CONTADOR)
+# =========================
 def motor_actualizacion_activos():
     conn = conectar_db()
     cursor = conn.cursor(dictionary=True)
 
-    print("\n--- YAHOO ---")
-
     cursor.execute("SELECT underlying, ticker_motor FROM sys_traductor_simbolos WHERE motor_fuente = 'yahoo_sym'")
     activos = cursor.fetchall()
+    total = len(activos)
+
+    print(f"\n--- YAHOO (Procesando {total} activos) ---")
 
     for i, activo in enumerate(activos, 1):
         symbol = activo['underlying']
         ticker = activo['ticker_motor']
 
+        # Print estratégico cada 5 activos o al final
+        if i % 5 == 0 or i == total:
+            print(f"📊 Progreso Yahoo: {i}/{total} (Actualizando {symbol}...)")
+
         try:
             info = yf.Ticker(ticker).info
-
             cursor.execute("""
                 INSERT INTO sys_info_activos (symbol, nombre_comercial, market_cap, last_update, source_info)
                 VALUES (%s, %s, %s, NOW(), 'yahoo_sym')
@@ -38,16 +58,15 @@ def motor_actualizacion_activos():
                 market_cap = VALUES(market_cap),
                 last_update = NOW()
             """, (symbol, info.get('longName'), info.get('marketCap')))
-
             conn.commit()
             time.sleep(0.5)
-
         except Exception as e:
-            print(f"Error Yahoo {symbol}: {e}")
+            print(f"❌ Error Yahoo {symbol}: {e}")
             time.sleep(2)
 
     cursor.close()
     conn.close()
+    print("✅ Yahoo finalizado.")
 
 
 # =========================
@@ -214,85 +233,75 @@ def actualizar_fundamentales(cursor, symbol, r):
 
 
 # =========================
-# MOTOR PRINCIPAL
+# MOTOR ALPHA INTELIGENTE
 # =========================
-
 def motor_alpha_inteligente():
-
     conn = conectar_db()
     cursor = conn.cursor(dictionary=True)
-
     candidato = obtener_candidato_alpha(cursor)
 
     if not candidato:
-        print("No hay candidatos Alpha (Todos al día o en espera de 24h).")
+        print("ℹ️ Alpha: No hay candidatos (Todos al día).")
         cursor.close()
         conn.close()
         return
 
     symbol = candidato['symbol']
     ticker = candidato['ticker_alpha']
-
-    print(f"Alpha → {symbol} ({ticker})")
+    print(f"🚀 Alpha → Procesando: {symbol} ({ticker})")
 
     try:
         marcar_intento(cursor, symbol)
         conn.commit()
+        r = requests.get(f'https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={ALPHA_VANTAGE_KEY}', timeout=10).json()
 
-        r = requests.get(
-            f'https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={ALPHA_VANTAGE_KEY}',
-            timeout=10
-        ).json()
-
-        # RATE LIMIT
         if "Note" in r:
-            print("RATE LIMIT (Alpha Vantage)")
+            print("⚠️ RATE LIMIT (Alpha Vantage)")
             return
 
-        # FAIL REAL (Si Alpha dice que no encontró el símbolo)
         if not r or "Symbol" not in r:
-            print(f"FAIL real: {symbol} no hallado en Alpha.")
+            print(f"❌ FAIL real: {symbol} no hallado en Alpha.")
             marcar_fail(cursor, symbol)
             conn.commit()
             return
 
-        # 🔥 CLASIFICACIÓN AUTOMÁTICA
         tipo, categoria = clasificar_asset(r)
-
-        # FUNDAMENTALES (Aquí también se resetean los fallos)
         actualizar_fundamentales(cursor, symbol, r)
-
-        # 🔥 AUTO-APRENDIZAJE INTELIGENTE
         guardar_traductor_alpha(cursor, symbol, ticker, tipo, categoria)
-
         conn.commit()
-
-        print(f"OK + aprendido: {symbol} | {tipo} - {categoria}")
-
-        time.sleep(12)
+        print(f"✅ OK: {symbol} actualizado y aprendido.")
 
     except Exception as e:
-        print(f"Error Alpha: {e}")
-
+        print(f"⚠️ Error Alpha: {e}")
     finally:
         cursor.close()
         conn.close()
 
-
 # =========================
-# LOOP
+# LOOP PRINCIPAL CON LOCK
 # =========================
-
 if __name__ == "__main__":
-
+    is_github = os.getenv('GITHUB_ACTIONS') == 'true'
+    
     while True:
+        conn_lock = conectar_db()
+        cursor_l = conn_lock.cursor()
+        
+        if obtener_lock(cursor_l, "LOCK_FUNDAMENTALES"):
+            conn_lock.commit()
+            try:
+                print("\n=== INICIANDO CICLO FUNDAMENTALES ===")
+                motor_actualizacion_activos()
+                motor_alpha_inteligente()
+                print("=== CICLO COMPLETADO ===")
+            finally:
+                liberar_lock(cursor_l, "LOCK_FUNDAMENTALES")
+                conn_lock.commit()
+        else:
+            print("⛔ [SKIP] Lock activo. Otra instancia está trabajando.")
+        
+        cursor_l.close()
+        conn_lock.close()
 
-        print("\n=== CICLO FUNDAMENTALES ===")
-
-        motor_actualizacion_activos()
-        motor_alpha_inteligente()
-
-        print("Ciclo completado. Esperando próxima ejecución...")
-        # En la nube (GitHub), esto suele ejecutarse una vez por el Loader, 
-        # pero mantenemos el sleep por si lo corres en local.
-        time.sleep(3900)
+        if is_github: break  # En la nube solo corre una vez
+        time.sleep(3600)
