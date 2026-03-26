@@ -287,21 +287,30 @@ if __name__ == "__main__":
         conn_lock = conectar_db()
         cursor_l = conn_lock.cursor()
         
+        # 1. Intentar obtener Lock
         if obtener_lock(cursor_l, "LOCK_FUNDAMENTALES"):
             conn_lock.commit()
+            print("🔐 [LOCK] LOCK_FUNDAMENTALES obtenido correctamente.")
+            
             try:
                 print("\n=== INICIANDO CICLO FUNDAMENTALES ===")
                 motor_actualizacion_activos()
                 motor_alpha_inteligente()
                 print("=== CICLO COMPLETADO ===")
             finally:
+                # 2. Liberar Lock siempre (aunque haya error)
                 liberar_lock(cursor_l, "LOCK_FUNDAMENTALES")
                 conn_lock.commit()
+                print("🔓 [LOCK] LOCK_FUNDAMENTALES liberado exitosamente.")
         else:
-            print("⛔ [SKIP] Lock activo. Otra instancia está trabajando.")
+            print("⛔ [SKIP] LOCK_FUNDAMENTALES activo en otra instancia. Abortando.")
         
         cursor_l.close()
         conn_lock.close()
 
-        if is_github: break  # En la nube solo corre una vez
+        if is_github: 
+            print("\n🏁 [CLOUD] Ejecución única finalizada.")
+            break 
+            
+        print(f"\n💤 [LOCAL] Esperando 1 hora para el siguiente ciclo...")
         time.sleep(3600)
