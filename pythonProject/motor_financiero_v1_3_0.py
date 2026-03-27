@@ -11,7 +11,7 @@ from hashlib import sha256
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 import socket
-from datetime import timezone
+from datetime import datetime, timezone
 
 # Intento de cargar config si existe
 try:
@@ -769,12 +769,9 @@ def ejecutar_motor_financiero(db):
 # 🧠 CONTROL DE HORARIOS (PC vs GITHUB)
 # ==========================================================
 def motor_debe_ejecutar():
-    """
-    Decide si el motor debe correr según el entorno y la hora.
-    Evita que tu PC y GitHub trabajen al mismo tiempo.
-    """
     is_github = os.getenv('GITHUB_ACTIONS') == 'true'
-    hora_utc = datetime.utcnow().hour
+    # Forma moderna: obtiene hora actual con zona horaria UTC explícita
+    hora_utc = datetime.now(timezone.utc).hour
 
     if not is_github:
         if hora_utc in [3, 4, 5]:
