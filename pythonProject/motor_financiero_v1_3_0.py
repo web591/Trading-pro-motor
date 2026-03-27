@@ -715,7 +715,7 @@ def ejecutar_motor_financiero(db):
     db.commit()
 
     print(f"\n{'='*60}")
-    print(f"💎 MOTOR FINANCIERO v1.3.1 - AUDITORÍA Y DIVIDENDOS")
+    print(f"💎 MOTOR FINANCIERO v1.3.2 - AUDITORÍA Y DIVIDENDOS")
     print(f"{'='*60}")
     
     try:
