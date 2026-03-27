@@ -11,7 +11,7 @@ from hashlib import sha256
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 import socket
-from datetime import datetime
+from datetime import timezone
 
 # Intento de cargar config si existe
 try:
