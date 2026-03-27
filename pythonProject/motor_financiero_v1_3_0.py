@@ -184,27 +184,18 @@ def rate_limit():
 def binance_sign(secret, query):
     return hmac.new(secret.encode(), query.encode(), hashlib.sha256).hexdigest()
 
-# ==========================================================
-# 🔌 BINANCE FUNCTIONS - CORREGIDAS
-# ==========================================================
-# Version 1.3.0
-
 def binance_dividends(db, user_id, key, secret):
     cursor = db.cursor(dictionary=True)
     endpoint = "BINANCE_DIVIDEND"
-
     last_sync = obtener_sync(cursor, user_id, "BINANCE", endpoint)
-
     start_ts = last_sync + 1 if last_sync > 0 else int((time.time() - 90*24*3600)*1000)
     end_now = int(time.time()*1000)
-
     print(f"    [+] {endpoint}: Escaneo por bloques desde {time.strftime('%Y-%m-%d', time.gmtime(start_ts/1000))}...")
 
     count_total = 0
     max_ts_global = last_sync
 
     while start_ts < end_now:
-
         chunk_end = start_ts + (7 * 24 * 60 * 60 * 1000)  # bloques de 7 días
         if chunk_end > end_now:
             chunk_end = end_now
@@ -218,20 +209,16 @@ def binance_dividends(db, user_id, key, secret):
 
         query = urlencode(params)
         signature = hmac.new(secret.encode(), query.encode(), hashlib.sha256).hexdigest()
-
         url = f"https://api.binance.com/sapi/v1/asset/assetDividend?{query}&signature={signature}"
 
         try:
             r = requests.get(url, headers={"X-MBX-APIKEY": key}).json()
-
             if "rows" in r and r["rows"]:
                 for d in r["rows"]:
                     ts = int(d["divTime"])
                     if ts <= last_sync:
                         continue
-
                     tran_id = d.get("tranId", d.get("id"))
-
                     registrar_cashflow(cursor, {
                         "user_id": user_id,
                         "broker": "BINANCE",
@@ -243,22 +230,17 @@ def binance_dividends(db, user_id, key, secret):
                         "id_externo": f"BN-DIV-{tran_id}",
                         "raw": json.dumps(d)
                     })
-
                     if ts > max_ts_global:
                         max_ts_global = ts
-
                     count_total += 1
-
             start_ts = chunk_end + 1
             rate_limit()
-
         except Exception as e:
             print(f"    [!] Error en bloque dividendos: {e}")
             break
 
     if max_ts_global > last_sync:
         guardar_sync(cursor, user_id, "BINANCE", endpoint, max_ts_global)
-
     print(f"    [OK] {endpoint}: {count_total} procesados.")
 
 def binance_income(db, user_id, key, secret):
@@ -302,6 +284,9 @@ def binance_income(db, user_id, key, secret):
         rate_limit()
     print(f"    [OK] {endpoint}: {count} procesados.")
 
+# ==========================================================
+# SECCIÓN MODIFICADA: DEPÓSITOS Y RETIROS (FILTRO BINANCE PAY)
+# ==========================================================
 def binance_deposits(db, user_id, key, secret):
     cursor = db.cursor(dictionary=True)
     endpoint = "BINANCE_DEPOSIT"
@@ -319,11 +304,20 @@ def binance_deposits(db, user_id, key, secret):
         for d in r:
             ts = int(d["insertTime"])
             if ts <= last_sync: continue
+            
+            raw_str = json.dumps(d)
+            
+            # NUEVO FILTRO INTELIGENTE: Si es Binance Pay, lo marcamos como TRANSFER
+            if "Received from" in raw_str or "Paid to" in raw_str:
+                evento_asignado = "TRANSFER"
+            else:
+                evento_asignado = "DEPOSIT"
+            
             registrar_cashflow(cursor, {
-                "user_id": user_id, "broker": "BINANCE", "tipo_evento": "DEPOSIT",
+                "user_id": user_id, "broker": "BINANCE", "tipo_evento": evento_asignado,
                 "asset": d["coin"], "cantidad": float(d["amount"]), "ticker_motor": None,
                 "fecha": time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts/1000)),
-                "id_externo": f"BN-DEP-{d['txId']}", "raw": json.dumps(d)
+                "id_externo": f"BN-DEP-{d['txId']}", "raw": raw_str
             })
             if ts > max_time: max_time = ts
             count += 1
@@ -341,13 +335,22 @@ def binance_withdraw(db, user_id, key, secret):
     count = 0
     if isinstance(r, list):
         for w in r:
+            raw_str = json.dumps(w)
+            
+            # NUEVO FILTRO INTELIGENTE: Si es Binance Pay, lo marcamos como TRANSFER
+            if "Received from" in raw_str or "Paid to" in raw_str:
+                evento_asignado = "TRANSFER"
+            else:
+                evento_asignado = "WITHDRAW"
+
             registrar_cashflow(cursor, {
-                "user_id": user_id, "broker": "BINANCE", "tipo_evento": "WITHDRAW",
+                "user_id": user_id, "broker": "BINANCE", "tipo_evento": evento_asignado,
                 "asset": w["coin"], "cantidad": -float(w["amount"]), "ticker_motor": None,
-                "fecha": w["applyTime"], "id_externo": f"BN-WITH-{w['id']}", "raw": json.dumps(w)
+                "fecha": w["applyTime"], "id_externo": f"BN-WITH-{w['id']}", "raw": raw_str
             })
             count += 1
     print(f"    [OK] BINANCE_WITHDRAW: {count} registros.")
+# ==========================================================
 
 def binance_dust_log(db, uid, key, secret):
     cursor = db.cursor(dictionary=True)
@@ -507,7 +510,6 @@ def binance_mining(db, user_id, key, secret):
     
     last_sync = obtener_sync(cursor, user_id, "BINANCE", endpoint)
     
-    # Si no hay sync, intentamos ir atrás (Binance suele limitar a 90 días en este endpoint)
     if last_sync == 0:
         actual_start = int((time.time() - 90*24*3600)*1000)
         print(f"    [+] {endpoint}: Escaneo histórico (Límite API 90 días)...")
@@ -520,8 +522,6 @@ def binance_mining(db, user_id, key, secret):
 
     for account in mining_accounts:
         for algo in algoritmos:
-            # Nota: La API de minería a veces ignora el startTime y solo da los últimos 
-            # por eso procesamos siempre y filtramos con el if ts > last_sync
             params = {
                 "algo": algo, 
                 "userName": account,
@@ -539,11 +539,8 @@ def binance_mining(db, user_id, key, secret):
                     for p in r["data"]["accountProfits"]:
                         ts = int(p["time"])
                         
-                        # Solo procesamos si es más nuevo que lo que tenemos
                         if ts <= last_sync: continue
                         
-                        # --- CORRECCIÓN IDENTIFICADA EN DEBUG ---
-                        # Intentamos 'profitAmount', luego 'dayProfit', luego 'amount'
                         cantidad = p.get("profitAmount", p.get("dayProfit", p.get("amount", 0.0)))
                         
                         registrar_cashflow(cursor, {
@@ -573,10 +570,6 @@ def binance_mining(db, user_id, key, secret):
 # ==========================================================
 # 🔌 BINGX FUNCTIONS
 # ==========================================================
-# Version 1.3.3 (FIX CRASH max_ts)
-
-# Version 1.3.3 (FIX CRASH max_ts)
-
 def bingx_income(db, user_id, key, secret):
     cursor = db.cursor(dictionary=True)
     endpoint = "BINGX_INCOME"
@@ -596,10 +589,9 @@ def bingx_income(db, user_id, key, secret):
         return
 
     count = 0
-    max_ts = last_sync   # ✅ SIEMPRE definido
+    max_ts = last_sync   
 
     if r.get("code") == 0 and r.get("data"):
-
         for i in r["data"]:
             ts = int(i["time"])
             if ts <= last_sync:
@@ -640,8 +632,6 @@ def bingx_income(db, user_id, key, secret):
             count += 1
 
         guardar_sync(cursor, user_id, "BINGX", endpoint, max_ts)
-
-    # ✅ SIEMPRE imprime sin romper
     
     print(f"    [OK] {endpoint}: {count} procesados. Nuevo TS: {max_ts}")
 
@@ -665,15 +655,14 @@ def bingx_deposits(db, user_id, key, secret):
         id_ext = f"BX-DEP-{d['txId']}"
         monto = float(d["amount"])
         
-        # Corregimos las llaves para que coincidan con registrar_transaccion_global
         registrar_transaccion_global(cursor, {
             "id_externo": id_ext, 
             "user_id": user_id, 
             "broker": "BINGX",
             "asset": d["coin"], 
-            "tipo_evento": "DEPOSIT", # Clave correcta
-            "cantidad": monto,        # Clave correcta
-            "fecha": fecha_sql,       # Clave correcta
+            "tipo_evento": "DEPOSIT",
+            "cantidad": monto,        
+            "fecha": fecha_sql,       
             "raw": json.dumps(d)
         })
         count += 1
@@ -699,15 +688,14 @@ def bingx_withdraw(db, user_id, key, secret):
         id_ext = f"BX-WITH-{w['id']}"
         monto = -float(w["amount"]) 
         
-        # Corregimos las llaves para que coincidan con registrar_transaccion_global
         registrar_transaccion_global(cursor, {
             "id_externo": id_ext, 
             "user_id": user_id, 
             "broker": "BINGX",
             "asset": w["coin"], 
-            "tipo_evento": "WITHDRAW", # Clave correcta
-            "cantidad": monto,         # Clave correcta
-            "fecha": fecha_sql,        # Clave correcta
+            "tipo_evento": "WITHDRAW",
+            "cantidad": monto,         
+            "fecha": fecha_sql,        
             "raw": json.dumps(w)
         })
         count += 1
@@ -720,12 +708,10 @@ def bingx_withdraw(db, user_id, key, secret):
 def ejecutar_motor_financiero(db):
     cursor = db.cursor(dictionary=True)
 
-    # 🔐 INTENTO DE LOCK GLOBAL
     if not obtener_lock(cursor, "LOCK_FINANCIERO"):
         print(f"\n⛔ [SKIP] LOCK_FINANCIERO activo en otro entorno. Abortando ciclo.")
         return
 
-    # Commit inmediato para asegurar el lock en la DB
     db.commit()
 
     print(f"\n{'='*60}")
@@ -749,7 +735,6 @@ def ejecutar_motor_financiero(db):
 
             broker = u['broker_name'].upper()
 
-            # --- PROCESAMIENTO POR BROKER ---
             if broker == "BINANCE":
                 binance_income(db, u['user_id'], k, s)
                 binance_dividends(db, u['user_id'], k, s)
@@ -771,7 +756,6 @@ def ejecutar_motor_financiero(db):
         print(f"\n[CRITICAL] Error en ejecución: {e}")
     
     finally:
-        # 🔓 LIBERAR LOCK SIEMPRE
         print("\n🔓 [SISTEMA] Liberando LOCK_FINANCIERO...")
         liberar_lock(cursor, "LOCK_FINANCIERO")
         db.commit()
@@ -789,20 +773,11 @@ def motor_debe_ejecutar():
     Decide si el motor debe correr según el entorno y la hora.
     Evita que tu PC y GitHub trabajen al mismo tiempo.
     """
-    entorno = "GITHUB" if os.getenv('GITHUB_ACTIONS') == 'true' else "PC"
-    hora = datetime.now().hour # Necesitas: from datetime import datetime
+    is_github = os.getenv('GITHUB_ACTIONS') == 'true'
+    hora_utc = datetime.utcnow().hour
 
-    # Si es GITHUB → solo corre en ciertas horas (ejemplo: madrugada)
-    if entorno == "GITHUB":
-        # Ajusta estas horas a cuando tu PC esté apagada
-        if hora in [3, 4, 5]:  
-            return True
-        else:
-            return False
-
-    # Si es PC → Puedes poner que siempre corra o excluir las horas de GitHub
-    if entorno == "PC":
-        if hora in [3, 4, 5]:
+    if not is_github:
+        if hora_utc in [3, 4, 5]:
             print("[SKIP] Mi PC cede el turno a GitHub en este horario.")
             return False
         return True
@@ -813,11 +788,9 @@ def motor_debe_ejecutar():
 # 🚀 EJECUCIÓN PRINCIPAL DUAL
 # ==========================================================
 if __name__ == "__main__":
-    # Detectar si estamos en GitHub para no entrar en bucle infinito
     is_github = os.getenv('GITHUB_ACTIONS') == 'true'
 
     if is_github:
-        # MODO CLOUD: Una sola ejecución
         db = None
         try:
             db = mysql.connector.connect(**config.DB_CONFIG)
@@ -826,7 +799,6 @@ if __name__ == "__main__":
             if db and db.is_connected():
                 db.close()
     else:
-        # MODO LOCAL (PC): Bucle de 1 hora
         while True:
             if not motor_debe_ejecutar():
                 print("[SKIP] GitHub fuera de horario o modo local desactivado. Reintentando en 10 min...")
@@ -842,6 +814,6 @@ if __name__ == "__main__":
             finally:
                 if db and db.is_connected():
                     db.close()
-                    print("[*] Conexión cerrada. Esperando 1 hora...")
             
+            print("⏳ Esperando 1 hora...")
             time.sleep(3600)
