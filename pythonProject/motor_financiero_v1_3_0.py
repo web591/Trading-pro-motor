@@ -152,12 +152,30 @@ def registrar_transaccion_global(cursor, data):
     ))
 
 # ==========================================================
-# 📝 REGISTRO MAESTRO (ACTUALIZADO PARA PERMITIR MITO/AIRDROPS)
+# 📝 REGISTRO MAESTRO (ACTUALIZADO: DETECCIÓN USDC / USDT)
 # ==========================================================
 def registrar_cashflow(cursor, data):
     ticker_ref = data.get("ticker_motor") or data["asset"]
     tid = obtener_traductor_id(cursor, data["broker"], ticker_ref)  
+    
+    # Obtener el precio base
     precio = obtener_precio_usd(cursor, tid, data["asset"])
+    
+    # --- LÓGICA PARA EVITAR INFLACIÓN EN DUST (USDT/USDC) ---
+    raw_str = str(data.get("raw", "{}"))
+    tipo_evento = str(data.get("tipo_evento", ""))
+    id_ext = str(data.get("id_externo", ""))
+
+    # Detectamos si es una operación de "limpieza de polvo" (Dust)
+    if "DUST" in tipo_evento or "BN-DUST" in id_ext:
+        # Si el JSON indica que el destino fue una Stablecoin (USDT o USDC)
+        if '"targetAsset": "USDC"' in raw_str or '"targetAsset": "USDT"' in raw_str:
+            precio = 1.0
+            # Forzamos el asset correcto según el JSON para que no se quede como BNB
+            if '"targetAsset": "USDC"' in raw_str: data["asset"] = "USDC"
+            if '"targetAsset": "USDT"' in raw_str: data["asset"] = "USDT"
+    # -------------------------------------------------------
+
     valor_usd = float(data["cantidad"]) * precio
 
     traductor_id_final = None
@@ -167,7 +185,11 @@ def registrar_cashflow(cursor, data):
     sql = """
     INSERT INTO sys_cashflows (user_id, broker, tipo_evento, asset, cantidad, ticker_motor, valor_usd, fecha_utc, id_externo, raw_json, traductor_id)
     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-    ON DUPLICATE KEY UPDATE raw_json=VALUES(raw_json), valor_usd=VALUES(valor_usd), traductor_id=VALUES(traductor_id)
+    ON DUPLICATE KEY UPDATE 
+        asset=VALUES(asset),
+        valor_usd=VALUES(valor_usd),
+        raw_json=VALUES(raw_json),
+        traductor_id=VALUES(traductor_id)
     """
     cursor.execute(sql, (data["user_id"], data["broker"], data["tipo_evento"], data["asset"], 
                          data["cantidad"], data["ticker_motor"], valor_usd, data["fecha"], 
@@ -175,8 +197,7 @@ def registrar_cashflow(cursor, data):
     
     registrar_transaccion_global(cursor, data)
 
-def rate_limit():
-    time.sleep(0.15)
+
 
 # ==========================================================
 # 🔌 BINANCE FUNCTIONS
