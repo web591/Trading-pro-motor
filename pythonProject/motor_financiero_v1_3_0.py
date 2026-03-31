@@ -13,6 +13,14 @@ from Crypto.Util.Padding import unpad
 import socket
 from datetime import datetime, timezone
 
+# ==========================================================
+# 🔧 UTILIDADES DE CONTROL (Añadidas para evitar errores de ejecución)
+# ==========================================================
+def rate_limit(segundos=0.5):
+    """Evita el error de definición y bloqueos de API"""
+    import time
+    time.sleep(segundos)
+
 # Intento de cargar config si existe
 try:
     import config
