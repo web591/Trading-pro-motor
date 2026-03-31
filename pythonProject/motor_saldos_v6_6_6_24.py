@@ -211,17 +211,17 @@ def registrar_trade(cursor, uid, t_data, info_traductor, broker_nombre):
         lado = t_data.get('side', 'BUY') 
 
         # 2. 🌐 GLOBAL
-        sql_global = """
-            INSERT IGNORE INTO transacciones_globales
-            (id_externo, user_id, tipo_investment, cuenta_tipo, categoria, asset,
-             traductor_id, monto_neto, comision, fecha_utc, broker)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        """
-        cursor.execute(sql_global, (
-            id_vinculo, uid, tipo_inv, cat_prod, 'TRADE', 
-            t_data['symbol'], t_id, t_data.get('quoteQty', 0), 
-            t_data.get('commission', 0), t_data['fecha_sql'], broker_nombre
-        ))
+        #sql_global = """
+        #    INSERT IGNORE INTO transacciones_globales
+        #    (id_externo, user_id, tipo_investment, cuenta_tipo, categoria, asset,
+        #    traductor_id, monto_neto, comision, fecha_utc, broker)
+        #    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        #"""
+        #cursor.execute(sql_global, (
+        #    id_vinculo, uid, tipo_inv, cat_prod, 'TRADE', 
+        #    t_data['symbol'], t_id, t_data.get('quoteQty', 0), 
+        #    t_data.get('commission', 0), t_data['fecha_sql'], broker_nombre
+        #))
 
         # 3. 🔍 DETALLE
         # Usamos INSERT IGNORE + ON DUPLICATE KEY para máxima seguridad
