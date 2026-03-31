@@ -193,7 +193,7 @@ def registrar_cashflow(cursor, data):
                          data["cantidad"], data["ticker_motor"], valor_usd, data["fecha"], 
                          data["id_externo"], data.get("raw", "{}"), traductor_id_final))
     
-    registrar_transaccion_global(cursor, data)
+    # registrar_transaccion_global(cursor, data)
 
 
 # ==========================================================
