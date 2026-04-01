@@ -335,7 +335,7 @@ def binance_deposits(db, user_id, key, secret):
             
             # NUEVO FILTRO INTELIGENTE: Si es Binance Pay, lo marcamos como TRANSFER
             if "Received from" in raw_str or "Paid to" in raw_str:
-                evento_asignado = "TRANSFER"
+                evento_asignado = "TRANSFER_IN"
             else:
                 evento_asignado = "DEPOSIT"
             
@@ -365,7 +365,7 @@ def binance_withdraw(db, user_id, key, secret):
             
             # NUEVO FILTRO INTELIGENTE: Si es Binance Pay, lo marcamos como TRANSFER
             if "Received from" in raw_str or "Paid to" in raw_str:
-                evento_asignado = "TRANSFER"
+                evento_asignado = "TRANSFER_OUT"
             else:
                 evento_asignado = "WITHDRAW"
 
