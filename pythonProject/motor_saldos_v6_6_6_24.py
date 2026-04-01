@@ -1249,8 +1249,8 @@ def run():
         # MODO LOCAL (TU PC): Bucle infinito
         while True:
             ejecutar_ciclo_completo()
-            print(" esperando 5 min para el siguiente ciclo...")
-            time.sleep(300)
+            print(" esperando 2 min para el siguiente ciclo...")
+            time.sleep(120)
 
 if __name__ == "__main__":
     run()
