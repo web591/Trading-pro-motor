@@ -97,17 +97,53 @@ def obtener_traductor_id(cursor, motor_fuente, ticker):
     return res
 
 def obtener_precio_usd(cursor, tid, asset_name):
-    # Bypass para Stablecoins (Como pediste, no necesitan traductor si son estas)
-    if asset_name.upper() in ['USDT', 'USDC', 'DAI', 'BUSD', 'PYUSD']: return 1.0
+    """
+    Busca el precio más reciente. 
+    Añade un fallback para buscar por nombre si el TID falla.
+    """
+    asset_upper = asset_name.upper().strip().replace('"', '')
+    
+    # 1. 🛡️ BYPASS PARA STABLECOINS (Seguridad absoluta)
+    if asset_upper in ['USDT', 'USDC', 'DAI', 'BUSD', 'PYUSD', 'FDUSD']: 
+        return 1.0
     
     try:
-        if tid:
-            tid_val = tid['id'] if isinstance(tid, dict) else tid[0]
+        # Extraer el ID limpio del traductor
+        tid_val = tid['id'] if isinstance(tid, dict) else tid
+        if isinstance(tid_val, (list, tuple)): tid_val = tid_val[0]
+
+        # 2. 🔍 INTENTO A: Por Traductor ID (Lo más preciso)
+        if tid_val:
             sql = "SELECT price FROM sys_precios_activos WHERE traductor_id = %s ORDER BY last_update DESC LIMIT 1"
             cursor.execute(sql, (tid_val,))
             row = cursor.fetchone()
-            if row: return float(row['price'] if isinstance(row, dict) else row[0])
-    except: pass
+            if row:
+                price = row['price'] if isinstance(row, dict) else row[0]
+                if price and float(price) > 0:
+                    return float(price)
+
+        # 3. 🔍 INTENTO B: Por Nombre de Activo (Fallback para Cashflows)
+        # Útil si el cashflow es de un activo que no tradeas pero del que tenemos precio 
+        # guardado de otro usuario o de una actualización general.
+        sql_name = """
+            SELECT p.price 
+            FROM sys_precios_activos p
+            JOIN sys_traductor_simbolos t ON p.traductor_id = t.id
+            WHERE t.underlying = %s 
+            ORDER BY p.last_update DESC LIMIT 1
+        """
+        cursor.execute(sql_name, (asset_upper,))
+        row_n = cursor.fetchone()
+        if row_n:
+            price = row_n['price'] if isinstance(row_n, dict) else row_n[0]
+            if price and float(price) > 0:
+                return float(price)
+
+    except Exception as e:
+        print(f"      [!] Error sutil en obtener_precio_usd ({asset_upper}): {e}")
+    
+    # 4. 🏳️ RENDICIÓN: Si no hay precio, devolvemos 0. 
+    # El Sweeper lo ignorará o lo dejará en 0 según lo que hablamos.
     return 0.0
 
 # ==========================================================
@@ -728,6 +764,49 @@ def bingx_withdraw(db, user_id, key, secret):
 
     print(f"    [OK] BINGX_WITHDRAW: {count} procesados.")
 
+def normalizar_cashflows_pendientes(db, user_id):
+    cursor = db.cursor(dictionary=True)
+    try:
+        # Buscamos cashflows sin valor USD
+        sql = """
+            SELECT id_cashflow, asset, cantidad 
+            FROM sys_cashflows 
+            WHERE user_id = %s AND (valor_usd IS NULL OR valor_usd = 0)
+        """
+        cursor.execute(sql, (user_id,))
+        pendientes = cursor.fetchall()
+
+        stables = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'DAI']
+
+        for item in pendientes:
+            asset = item['asset'].upper()
+            precio = 0.0
+
+            if asset in stables:
+                precio = 1.0
+            else:
+                # Intentamos buscar precio solo para activos conocidos (BNB, BTC, ETH, etc.)
+                # Si obtener_precio_usd falla, devolverá 0 y lo ignoramos (tus activos raros)
+                sql_tid = "SELECT id FROM sys_traductor_simbolos WHERE underlying = %s LIMIT 1"
+                cursor.execute(sql_tid, (asset,))
+                res = cursor.fetchone()
+                if res:
+                    precio = obtener_precio_usd(cursor, res['id'], asset)
+
+            if precio > 0:
+                v_usd = float(item['cantidad']) * float(precio)
+                # Escudo de seguridad (opcional para cashflows, suelen ser montos pequeños)
+                if v_usd < 500: 
+                    cursor.execute(
+                        "UPDATE sys_cashflows SET valor_usd = %s WHERE id_cashflow = %s",
+                        (v_usd, item['id_cashflow'])
+                    )
+        db.commit()
+    except Exception as e:
+        print(f"Error normalizando cashflows: {e}")
+    finally:
+        cursor.close()
+
 # ==========================================================
 # 🚀 EJECUCIÓN PRINCIPAL CON LOCK
 # ==========================================================
@@ -774,6 +853,11 @@ def ejecutar_motor_financiero(db):
                 bingx_income(db, u['user_id'], k, s)
                 bingx_deposits(db, u['user_id'], k, s)
                 bingx_withdraw(db, u['user_id'], k, s)
+
+            # 2. 🧹 NORMALIZACIÓN (Aquí es el lugar correcto)
+            # Una vez que terminó de bajar todo de los brokers, limpiamos lo pendiente en USD
+            print(f"    >>> 🧹 SWEEPER DE CASHFLOWS (USER: {u['user_id']}) <<<")
+            normalizar_cashflows_pendientes(db, u['user_id'])   
 
             db.commit()
             print(f"    [v] Cambios guardados para User {u['user_id']}.")
