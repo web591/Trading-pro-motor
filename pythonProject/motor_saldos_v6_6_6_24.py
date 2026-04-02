@@ -154,6 +154,85 @@ def obtener_precio_usd(cursor, tid, asset_name):
         print(f"[Precio Error {asset_name}]: {e}")
     return 0.0
 
+# ==========================================================
+# FINANCIAL TRADING MODULE - NORMALIZADOR DE COMISIONES
+# Version: 1.0 (Opción A - Sweeper Continuo)
+# ==========================================================
+def normalizar_comisiones_pendientes(db, user_id):
+    """
+    Busca trades con comisión en 0 USD y los repara con un límite de seguridad.
+    """
+    cursor = db.cursor(dictionary=True)
+    try:
+        sql_pendientes = """
+            SELECT id_detalle, commission, commission_asset, quote_qty 
+            FROM detalle_trades 
+            WHERE user_id = %s 
+              AND commission > 0 
+              AND (commission_usd IS NULL OR commission_usd = 0)
+        """
+        cursor.execute(sql_pendientes, (user_id,))
+        trades = cursor.fetchall()
+
+        if not trades:
+            return 
+
+        stables = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'DAI', 'PYUSD']
+
+        for trade in trades:
+            # 1. 🧹 LIMPIEZA: Quitamos comillas o espacios que puedan venir del exchange
+            asset_raw = trade['commission_asset']
+            if not asset_raw: continue
+            asset = asset_raw.strip().replace('"', '').upper()
+
+            precio_actual = 0.0
+
+            # 2. LÓGICA DE PRECIO
+            if asset in stables:
+                precio_actual = 1.0
+            else:
+                sql_tid = """
+                    SELECT id FROM sys_traductor_simbolos 
+                    WHERE underlying = %s AND quote_asset = 'USDT' AND motor_fuente = 'binance_spot' 
+                    LIMIT 1
+                """
+                cursor.execute(sql_tid, (asset,))
+                res_tid = cursor.fetchone()
+
+                if res_tid:
+                    # Aquí es donde obtenemos el precio (BNB, BTC, etc)
+                    precio_actual = obtener_precio_usd(cursor, res_tid['id'], asset)
+
+            # 3. 🛡️ CÁLCULO CON ESCUDO DE SEGURIDAD
+            if precio_actual and precio_actual > 0:
+                com_nominal = float(trade['commission'])
+                com_usd = com_nominal * float(precio_actual)
+                
+                # --- EL BLOQUE DE SEGURIDAD ---
+                # Si la comisión calculada es mayor a $15 USD O es igual al monto del trade (error espejo), 
+                # la bloqueamos para no ensuciar el dashboard.
+                monto_trade = float(trade['quote_qty'])
+                
+                es_error_espejo = abs(com_nominal - monto_trade) < 0.00001
+                es_valor_absurdo = com_usd > 15.0 # Ajusta este valor si haces trades institucionales muy grandes
+
+                if es_error_espejo or es_valor_absurdo:
+                    print(f"⚠️ BLOQUEO: ID {trade['id_detalle']} - Com: {com_nominal} {asset} calculaba ${com_usd:.2f}")
+                    # Lo marcamos con un valor mínimo o 0 para que no vuelva a entrar al ciclo
+                    cursor.execute("UPDATE detalle_trades SET commission_usd = 0.00000001 WHERE id_detalle = %s", (trade['id_detalle'],))
+                else:
+                    # 4. ACTUALIZACIÓN NORMAL
+                    sql_update = "UPDATE detalle_trades SET commission_usd = %s, commission_asset = %s WHERE id_detalle = %s"
+                    cursor.execute(sql_update, (com_usd, asset, trade['id_detalle']))
+                    print(f"    [+] Comisión Normalizada: {asset} -> ${com_usd:.4f} USD")
+
+        db.commit()
+    except Exception as e:
+        print(f"    [!] Error en Sweeper de Comisiones: {e}")
+    finally:
+        cursor.close()
+# ==========================================================
+
 def registrar_saldo(cursor, uid, info_traductor, total, locked, asset, broker, tipo_cuenta):
     tid = info_traductor['id'] if info_traductor else None
     precio = obtener_precio_usd(cursor, tid, asset)
@@ -1212,6 +1291,11 @@ def ejecutar_ciclo_completo():
 
                 print("        >>> BINGX  POSITION  <<<")
                 procesar_bingx_positions(db, u['user_id'], k, s)
+
+                # 🚀 NORMALIZADOR GLOBAL (OPCIÓN A)
+                # Se ejecuta aquí para capturar trades de SPOT, COIN-M y FUTUROS por igual
+                print(f"        >>> 🧹 SWEEPER DE COMISIONES (USER: {u['user_id']}) <<<")
+                normalizar_comisiones_pendientes(db, u['user_id'])
 
             db.commit()
 
