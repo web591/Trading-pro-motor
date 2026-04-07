@@ -302,20 +302,19 @@ def registrar_trade(cursor, uid, t_data, info_traductor, broker_nombre):
         #    t_data.get('commission', 0), t_data['fecha_sql'], broker_nombre
         #))
 
-        # 3. 🔍 DETALLE
-        # Usamos INSERT IGNORE + ON DUPLICATE KEY para máxima seguridad
+        # 3. 🔍 DETALLE (Actualizado con order_id_externo)
         sql_detalle = """
             INSERT IGNORE INTO detalle_trades (
                 user_id, traductor_id, broker, categoria_producto,
                 motor_fuente, tipo_investment, id_externo_ref, fecha_utc, 
                 symbol, lado, position_side, reduce_only, precio_ejecucion, 
                 cantidad_ejecutada, commission, commission_asset,
-                quote_qty, pnl_realizado, is_maker, trade_id_externo, raw_json
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                quote_qty, pnl_realizado, is_maker, trade_id_externo, 
+                order_id_externo, raw_json
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE raw_json = VALUES(raw_json)
         """
         
-        # Todo este bloque debe ir dentro del TRY (con 8 espacios de sangría)
         cursor.execute(sql_detalle, (
             uid, t_id, broker_nombre, cat_prod, motor, tipo_inv,
             id_vinculo, t_data['fecha_sql'], t_data['symbol'],
@@ -323,9 +322,11 @@ def registrar_trade(cursor, uid, t_data, info_traductor, broker_nombre):
             float(t_data.get('price', 0)), float(t_data.get('qty', 0)),
             float(t_data.get('commission', 0)), t_data.get('commissionAsset'),
             float(t_data.get('quoteQty', 0)), float(t_data.get('realizedPnl', 0)),
-            1 if t_data.get('isMaker') else 0, f"TRD-{t_data.get('tradeId', t_data['orderId'])}",
+            1 if t_data.get('isMaker') else 0, 
+            f"TRD-{t_data.get('tradeId', t_data['orderId'])}", # trade_id_externo
+            t_data.get('orderId'),                             # order_id_externo (NUEVO)
             json.dumps(t_data)
-        ))        
+        ))
 
         return True
 
