@@ -69,50 +69,52 @@ def descifrar_dato(t, m):
         return None
 
 # ==========================================================
-# 🎯 VINCULACIÓN Y PRECIOS (ACTUALIZADO CON TU LÓGICA DE UNDERLYING)
+# 🎯 VINCULACIÓN Y PRECIOS (BLINDADO CON ID MAESTRO YAHOO)
 # ==========================================================
 def obtener_traductor_id(cursor, motor_fuente, ticker):
     ticker = ticker.upper().strip()
     
-    # 1. Búsqueda Exacta
+    # 1. Búsqueda Exacta (Si el exchange nos da el ticker directo)
     sql = "SELECT id FROM sys_traductor_simbolos WHERE motor_fuente = %s AND ticker_motor = %s LIMIT 1"
     cursor.execute(sql, (motor_fuente, ticker))
     row = cursor.fetchone()
     if row: return row
     
-    # 2. Búsqueda por Underlying + SPOT (Tu idea para LD y Tickers sin par)
+    # 2. Búsqueda por Underlying (Jerarquía: Binance -> Spot -> Yahoo)
     ticker_limpio = ticker[2:] if ticker.startswith("LD") else (ticker[3:] if ticker.startswith("STK") else ticker)
     
     sql = """
         SELECT id FROM sys_traductor_simbolos 
-        WHERE underlying = %s AND categoria_producto = 'SPOT' 
+        WHERE underlying = %s 
+        ORDER BY 
+            (CASE 
+                WHEN motor_fuente = 'binance_spot' AND ticker_motor LIKE '%%USDT' THEN 1
+                WHEN categoria_producto = 'SPOT' THEN 2
+                WHEN motor_fuente = 'yahoo_sym' THEN 3
+                ELSE 4 
+            END) ASC
         LIMIT 1
     """
     cursor.execute(sql, (ticker_limpio,))
     res = cursor.fetchone()
-    
-    if not res:
-        # No imprimimos error aquí para permitir que monedas como MITO fluyan con ID NULL
-        pass
     return res
 
 def obtener_precio_usd(cursor, tid, asset_name):
     """
-    Busca el precio más reciente. 
-    Añade un fallback para buscar por nombre si el TID falla.
+    Busca el precio más reciente usando el ID Maestro de Yahoo como ancla principal.
     """
     asset_upper = asset_name.upper().strip().replace('"', '')
     
-    # 1. 🛡️ BYPASS PARA STABLECOINS (Seguridad absoluta)
+    # 1. 🛡️ BYPASS PARA STABLECOINS
     if asset_upper in ['USDT', 'USDC', 'DAI', 'BUSD', 'PYUSD', 'FDUSD']: 
         return 1.0
     
     try:
-        # Extraer el ID limpio del traductor
+        # Extraer el ID si viene como diccionario o tupla
         tid_val = tid['id'] if isinstance(tid, dict) else tid
         if isinstance(tid_val, (list, tuple)): tid_val = tid_val[0]
 
-        # 2. 🔍 INTENTO A: Por Traductor ID (Lo más preciso)
+        # 2. 🔍 INTENTO A: Por el ID proporcionado (Si el traductor ya nos dio el bueno)
         if tid_val:
             sql = "SELECT price FROM sys_precios_activos WHERE traductor_id = %s ORDER BY last_update DESC LIMIT 1"
             cursor.execute(sql, (tid_val,))
@@ -122,28 +124,40 @@ def obtener_precio_usd(cursor, tid, asset_name):
                 if price and float(price) > 0:
                     return float(price)
 
-        # 3. 🔍 INTENTO B: Por Nombre de Activo (Fallback para Cashflows)
-        # Útil si el cashflow es de un activo que no tradeas pero del que tenemos precio 
-        # guardado de otro usuario o de una actualización general.
-        sql_name = """
+        # 3. 🔍 INTENTO B: BLINDAJE MAESTRO (Cruzado por nombre + Motor Yahoo)
+        # Si el ID de arriba falló o era NULL, buscamos el precio del registro de Yahoo para ese asset
+        sql_yahoo = """
+            SELECT p.price 
+            FROM sys_precios_activos p
+            JOIN sys_traductor_simbolos t ON p.traductor_id = t.id
+            WHERE t.underlying = %s AND t.motor_fuente = 'yahoo_sym'
+            ORDER BY p.last_update DESC LIMIT 1
+        """
+        cursor.execute(sql_yahoo, (asset_upper,))
+        row_y = cursor.fetchone()
+        if row_y:
+            price = row_y['price'] if isinstance(row_y, dict) else row_y[0]
+            if price and float(price) > 0:
+                return float(price)
+
+        # 4. 🔍 INTENTO C: Fallback General (Cualquier motor que tenga precio para ese underlying)
+        sql_any = """
             SELECT p.price 
             FROM sys_precios_activos p
             JOIN sys_traductor_simbolos t ON p.traductor_id = t.id
             WHERE t.underlying = %s 
             ORDER BY p.last_update DESC LIMIT 1
         """
-        cursor.execute(sql_name, (asset_upper,))
-        row_n = cursor.fetchone()
-        if row_n:
-            price = row_n['price'] if isinstance(row_n, dict) else row_n[0]
+        cursor.execute(sql_any, (asset_upper,))
+        row_any = cursor.fetchone()
+        if row_any:
+            price = row_any['price'] if isinstance(row_any, dict) else row_any[0]
             if price and float(price) > 0:
                 return float(price)
 
     except Exception as e:
         print(f"      [!] Error sutil en obtener_precio_usd ({asset_upper}): {e}")
     
-    # 4. 🏳️ RENDICIÓN: Si no hay precio, devolvemos 0. 
-    # El Sweeper lo ignorará o lo dejará en 0 según lo que hablamos.
     return 0.0
 
 # ==========================================================
