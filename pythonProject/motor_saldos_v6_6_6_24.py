@@ -533,9 +533,14 @@ def procesar_bingx(db, uid, ak, as_):
     # 🟩 BINGX SPOT TRADES
     # Version 6.7.2
     # ==========================================================
+
+    # Version 6.7.4 FINAL - BINGX SPOT PARITY BINANCE
+
     print("        >>> BINGX SPOT TRADES <<<")
+
     try:
-        start_ts = obtener_punto_inicio_sincro(cursor,uid,"BINGX","trades_spot"
+        start_ts = obtener_punto_inicio_sincro(
+            cursor, uid, "BINGX", "trades_spot"
         )
 
         res_tr = bx_req(
@@ -543,47 +548,70 @@ def procesar_bingx(db, uid, ak, as_):
             {"startTime": start_ts}
         )
 
-        trades_raw = res_tr.get("data", {}).get("trades", [])
+        # Soporte doble formato BingX
+        data_block = res_tr.get("data", {})
+        if isinstance(data_block, list):
+            trades_raw = data_block
+        else:
+            trades_raw = data_block.get("trades", [])
 
         trades_insertados = 0
 
-        for t in sorted(trades_raw, key=lambda x: x['time']):
+        for t in sorted(trades_raw, key=lambda x: x.get('time', 0)):
+
             symbol = t.get("symbol")
+
             info = buscar_en_traductor_bingx(symbol)
             if not info:
                 generar_tarea_incorporacion(
-                    cursor,uid,"BINGX",symbol,"TRADE_SPOT"
+                    cursor, uid, "BINGX", symbol, "TRADE_SPOT"
                 )
-
                 continue
 
-            qty = float(t.get("qty",0))
-            price = float(t.get("price",0))
+            qty = float(t.get("qty", 0))
+            price = float(t.get("price", 0))
+
+            # FIX quoteQty
+            quote_qty = t.get("quoteQty")
+            if quote_qty is None:
+                quote_qty = qty * price
+            quote_qty = float(quote_qty)
+
+            # FIX commission asset
+            commission_asset = t.get("commissionAsset")
+            if not commission_asset:
+                commission_asset = symbol.split("-")[0]
 
             trade_data = {
-
-                "tradeId": str(t.get("id")),"orderId": str(t.get("orderId")),
-                "symbol": symbol,"side": t.get("side"),"price": price,
-                "qty": qty,"quoteQty": qty * price,"commission": abs(float(t.get("commission",0))),
-                "commissionAsset": t.get("commissionAsset",""),"realizedPnl": 0,
-                "fecha_sql": datetime.fromtimestamp(
-                    t.get("time",0)/1000
-                ).strftime("%Y-%m-%d %H:%M:%S"),"isMaker": False,"es_futuro": False
+                "tradeId": str(t.get("id")),   # 🔥 IGUAL QUE BINANCE
+                "orderId": str(t.get("orderId")), 
+                "symbol": symbol,
+                "side": "BUY" if t.get("isBuyer") else "SELL",
+                "price": price,
+                "qty": qty,
+                "quoteQty": quote_qty,
+                "commission": abs(float(t.get("commission", 0))),
+                "commissionAsset": commission_asset,
+                "realizedPnl": 0,
+                "fecha_sql": datetime.utcfromtimestamp(
+                    t.get("time", 0) / 1000
+                ).strftime("%Y-%m-%d %H:%M:%S"),
+                "isMaker": t.get("isMaker", False),
+                "es_futuro": False,
+                "raw_json": json.dumps(t)
             }
 
-            if registrar_trade(
-                cursor,uid,trade_data,info,"BINGX"
-            ):
-
+            if registrar_trade(cursor, uid, trade_data, info, "BINGX"):
                 trades_insertados += 1
 
         actualizar_punto_sincro(
-            cursor,uid,"BINGX","trades_spot",int(time.time()*1000)
+            cursor, uid, "BINGX", "trades_spot", int(time.time() * 1000)
         )
 
         print(f"    [OK] Trades spot insertados: {trades_insertados}")
+
     except Exception as e:
-        print(f"[BINGX SPOT ERROR] {e}")        
+        print(f"[BINGX SPOT ERROR] {e}")
 
     # ==========================================================
     # 🟧 BINGX FUTURES TRADES
@@ -630,17 +658,32 @@ def procesar_bingx(db, uid, ak, as_):
             qty = float(o.get("executedQty", 0))
             price = float(o.get("avgPrice", 0))
 
-            trade_data = {
+            # Version 6.7.4 FUTURES FIX
 
-                "tradeId": str(o.get("orderId")),"orderId": str(o.get("orderId")),
-                "symbol": symbol,"side": o.get("side"),
-                "positionSide": o.get("positionSide"),"price": price,
-                "qty": qty,"quoteQty": float(o.get("cumQuote",0)),
-                "commission": abs(float(o.get("commission",0))),"commissionAsset": "USDT",
-                "reduceOnly": o.get("reduceOnly", False),"realizedPnl": float(o.get("profit",0)),                
-                "fecha_sql": datetime.fromtimestamp(
-                    o.get("updateTime",0)/1000
-                ).strftime("%Y-%m-%d %H:%M:%S"),"isMaker": False,"es_futuro": True
+            trade_data = {
+                "tradeId": str(o.get("orderId")),  # 🔥 CLAVE
+                "orderId": str(o.get("orderId")),                
+                "symbol": symbol,
+                "side": o.get("side"),
+                "positionSide": o.get("positionSide"),
+                "price": price,
+                "qty": qty,
+                "quoteQty": float(o.get("cumQuote", 0)),
+
+                "commission": abs(float(o.get("commission", 0))),
+                "commissionAsset": "USDT",
+
+                "reduceOnly": o.get("reduceOnly", False),
+                "realizedPnl": float(o.get("profit", 0)),
+
+                "fecha_sql": datetime.utcfromtimestamp(
+                    o.get("updateTime", 0) / 1000
+                ).strftime("%Y-%m-%d %H:%M:%S"),
+
+                "isMaker": False,
+                "es_futuro": True,
+
+                "raw_json": json.dumps(o)  # 🔥 CRÍTICO
             }
 
             if registrar_trade(
