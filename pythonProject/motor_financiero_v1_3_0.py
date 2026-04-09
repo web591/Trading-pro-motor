@@ -319,12 +319,16 @@ def binance_dividends(db, user_id, key, secret):
         guardar_sync(cursor, user_id, "BINANCE", endpoint, max_ts_global)
     print(f"    [OK] {endpoint}: {count_total} procesados.")
 
+# ==========================================================
+# BINANCE INCOME NORMALIZADO
+# Version 1.1 (ALINEADO A MODELO CONTABLE)
+# ==========================================================
 def binance_income(db, user_id, key, secret):
+
     cursor = db.cursor(dictionary=True)
     endpoint = "BINANCE_INCOME"
     last_sync = obtener_sync(cursor, user_id, "BINANCE", endpoint)
     
-    # CORRECCIÓN: Para Futures Income, si es 0, Binance requiere un startTime razonable
     if last_sync == 0:
         actual_start = int((time.time() - 90*24*3600)*1000)
     else:
@@ -334,32 +338,76 @@ def binance_income(db, user_id, key, secret):
     
     base = "https://fapi.binance.com/fapi/v1/income"
     count = 0
+
     while True:
-        params = {"startTime": actual_start, "limit": 1000, "timestamp": int(time.time()*1000)}
+        params = {
+            "startTime": actual_start,
+            "limit": 1000,
+            "timestamp": int(time.time()*1000)
+        }
+
         query = urlencode(params)
         url = f"{base}?{query}&signature={binance_sign(secret, query)}"
+
         r = requests.get(url, headers={"X-MBX-APIKEY": key}).json()
 
-        if not r or not isinstance(r, list): break 
+        if not r or not isinstance(r, list):
+            break 
 
         max_time = actual_start
+
         for i in r:
             ts = int(i["time"])
+            tipo_api = i["incomeType"]
+
+            # 🔥 FILTRO INTELIGENTE
+            if tipo_api not in ["FUNDING_FEE", "REALIZED_PNL"]:
+                continue
+
+            # 🔥 NORMALIZACIÓN
+            if tipo_api == "FUNDING_FEE":
+                tipo_evento = "FUNDING"
+            elif tipo_api == "REALIZED_PNL":
+                tipo_evento = "PNL_VALIDACION"
+
+            asset = i["asset"]
+            monto = float(i["income"])
+            symbol = i.get("symbol") or asset
+
+            fecha_sql = time.strftime(
+                '%Y-%m-%d %H:%M:%S',
+                time.gmtime(ts/1000)
+            )
+
+            id_ext = f"BN-INC-{user_id}-{i['tranId']}"
+
             registrar_cashflow(cursor, {
-                "user_id": user_id, "broker": "BINANCE", "tipo_evento": i["incomeType"],
-                "asset": i["asset"], "cantidad": float(i["income"]), "ticker_motor": i.get("symbol"),
-                "fecha": time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts/1000)),
-                "id_externo": f"BN-INC-{i['tranId']}", "raw": json.dumps(i)
+                "user_id": user_id,
+                "broker": "BINANCE",
+                "tipo_evento": tipo_evento,
+                "asset": asset,
+                "cantidad": monto,
+                "ticker_motor": symbol,
+                "fecha": fecha_sql,
+                "id_externo": id_ext,
+                "raw": json.dumps(i)
             })
-            if ts > max_time: max_time = ts
+
+            if ts > max_time:
+                max_time = ts
+
             count += 1
 
         guardar_sync(cursor, user_id, "BINANCE", endpoint, max_time)
         actual_start = max_time + 1
-        if len(r) < 1000: break
-        rate_limit()
-    print(f"    [OK] {endpoint}: {count} procesados.")
 
+        if len(r) < 1000:
+            break
+
+        rate_limit()
+
+    print(f"    [OK] {endpoint}: {count} procesados.")
+    
 # ==========================================================
 # SECCIÓN MODIFICADA: DEPÓSITOS Y RETIROS (FILTRO BINANCE PAY)
 # ==========================================================
@@ -682,7 +730,7 @@ def bingx_income(db, user_id, key, secret):
             id_ext = f"BX-INC-{ts}-{asset}-{tipo_api}"
 
             if tipo_api == "REALIZED_PNL":
-                categoria = "TRADE"
+                categoria = "PNL VALIDACION"
             elif tipo_api in ["TRADING_FEE", "COMMISSION"]:
                 categoria = "FEE"
             elif tipo_api == "FUNDING_FEE":
