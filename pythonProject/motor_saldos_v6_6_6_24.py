@@ -577,10 +577,13 @@ def procesar_bingx(db, uid, ak, as_):
                 quote_qty = qty * price
             quote_qty = float(quote_qty)
 
-            # FIX commission asset
+            # Version 6.7.5 FIX REAL
+
             commission_asset = t.get("commissionAsset")
-            if not commission_asset:
-                commission_asset = symbol.split("-")[0]
+            if commission_asset:
+                commission_asset = commission_asset.strip().upper()
+            else:
+                commission_asset = None
 
             trade_data = {
                 "tradeId": str(t.get("id")),   # 🔥 IGUAL QUE BINANCE
