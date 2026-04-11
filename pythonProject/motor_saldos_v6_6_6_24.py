@@ -529,177 +529,124 @@ def procesar_bingx(db, uid, ak, as_):
         t_count += 1
     print(f"    [OK] Orden Futuros Open Bingx: {t_count} nuevos procesados.") 
 
-    # ==========================================================
-    # 🟩 BINGX SPOT TRADES
-    # Version 6.7.2
-    # ==========================================================
 
-    # Version 6.7.4 FINAL - BINGX SPOT PARITY BINANCE
 
+    # ==========================================================
+    # 🟩 BINGX SPOT TRADES - CRUCE REAL CON TABLAS (V6.8.1)
+    # ==========================================================
     print("        >>> BINGX SPOT TRADES <<<")
-
     try:
-        start_ts = obtener_punto_inicio_sincro(
-            cursor, uid, "BINGX", "trades_spot"
-        )
+        start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINGX", "trades_spot")
+        res_tr = bx_req("/openApi/spot/v1/trade/myTrades", {"startTime": start_ts})
 
-        res_tr = bx_req(
-            "/openApi/spot/v1/trade/myTrades",
-            {"startTime": start_ts}
-        )
-
-        # Soporte doble formato BingX
         data_block = res_tr.get("data", {})
-        if isinstance(data_block, list):
-            trades_raw = data_block
-        else:
-            trades_raw = data_block.get("trades", [])
-
+        trades_raw = data_block if isinstance(data_block, list) else data_block.get("trades", [])
         trades_insertados = 0
 
         for t in sorted(trades_raw, key=lambda x: x.get('time', 0)):
-
             symbol = t.get("symbol")
-
+            
+            # --- VALIDACIÓN CON TABLA sys_traductor_simbolos ---
             info = buscar_en_traductor_bingx(symbol)
             if not info:
-                generar_tarea_incorporacion(
-                    cursor, uid, "BINGX", symbol, "TRADE_SPOT"
-                )
+                generar_tarea_incorporacion(cursor, uid, "BINGX", symbol, "TRADE_SPOT")
                 continue
 
             qty = float(t.get("qty", 0))
             price = float(t.get("price", 0))
+            quote_qty = float(t.get("quoteQty") if t.get("quoteQty") is not None else (qty * price))
 
-            # FIX quoteQty
-            quote_qty = t.get("quoteQty")
-            if quote_qty is None:
-                quote_qty = qty * price
-            quote_qty = float(quote_qty)
-
-            # Version 6.7.5 FIX REAL
-
-            commission_asset = t.get("commissionAsset")
-            if commission_asset:
-                commission_asset = commission_asset.strip().upper()
-            else:
-                commission_asset = None
-
+            # Mapeo idéntico a Binance Spot usando Nombres de Tablas Reales
             trade_data = {
-                "tradeId": str(t.get("id")),   # 🔥 IGUAL QUE BINANCE
-                "orderId": str(t.get("orderId")), 
+                "tradeId": str(t.get("id")),
+                "orderId": str(t.get("orderId")),
                 "symbol": symbol,
                 "side": "BUY" if t.get("isBuyer") else "SELL",
                 "price": price,
                 "qty": qty,
                 "quoteQty": quote_qty,
                 "commission": abs(float(t.get("commission", 0))),
-                "commissionAsset": commission_asset,
+                "commissionAsset": t.get("commissionAsset", "USDT").strip().upper() if t.get("commissionAsset") else None,
                 "realizedPnl": 0,
-                "fecha_sql": datetime.utcfromtimestamp(
-                    t.get("time", 0) / 1000
-                ).strftime("%Y-%m-%d %H:%M:%S"),
-                "isMaker": t.get("isMaker", False),
-                "es_futuro": False,
+                "fecha_sql": datetime.utcfromtimestamp(t.get("time", 0) / 1000).strftime("%Y-%m-%d %H:%M:%S"),
+                "isMaker": 1 if t.get("isMaker") is True else 0,
+                # --- AQUÍ USA LO QUE DIGA TU TABLA SIN FORZAR ---
+                "categoria": info.get('categoria_producto'), 
+                "tipo_investment": info.get('tipo_investment'),
                 "raw_json": json.dumps(t)
             }
 
             if registrar_trade(cursor, uid, trade_data, info, "BINGX"):
                 trades_insertados += 1
 
-        actualizar_punto_sincro(
-            cursor, uid, "BINGX", "trades_spot", int(time.time() * 1000)
-        )
-
+        actualizar_punto_sincro(cursor, uid, "BINGX", "trades_spot", int(time.time() * 1000))
         print(f"    [OK] Trades spot insertados: {trades_insertados}")
 
     except Exception as e:
         print(f"[BINGX SPOT ERROR] {e}")
 
+
     # ==========================================================
-    # 🟧 BINGX FUTURES TRADES
-    # Version 6.7.3 (FIX PROFIT + STRUCTURE)
+    # 🟧 BINGX FUTURES TRADES - CRUCE REAL CON TABLAS (V6.8.1)
     # ==========================================================
     print("        >>> BINGX FUTURES TRADES <<<")
     try:
-        start_ts = obtener_punto_inicio_sincro(
-            cursor,uid,"BINGX","trades_futures"
-        )
-
-        res_tr = bx_req(
-            "/openApi/swap/v2/trade/allOrders",
-            {"limit": 100}
-        )
-
-        #print("[BINGX DEBUG] Respuesta orders:", res_tr)
-
+        start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINGX", "trades_futures")
+        res_tr = bx_req("/openApi/swap/v2/trade/allOrders", {"limit": 100})
         orders = res_tr.get("data", {}).get("orders", [])
 
         trades_insertados = 0
         max_ts = start_ts
 
         for o in sorted(orders, key=lambda x: x['updateTime']):
-
-            if o.get("status") != "FILLED":
-                continue
+            if o.get("status") != "FILLED": continue
+            
             update_time = int(o.get("updateTime", 0))
-            if update_time <= start_ts:
-                continue
-            if update_time > max_ts:
-                max_ts = update_time
+            if update_time <= start_ts: continue
+            if update_time > max_ts: max_ts = update_time
 
             symbol = o.get("symbol")
+            
+            # --- VALIDACIÓN CON TABLA sys_traductor_simbolos ---
             info = buscar_en_traductor_bingx(symbol)
             if not info:
-
-                generar_tarea_incorporacion(
-                    cursor,uid,"BINGX",symbol,"TRADE_FUTURES"
-                )
-
+                generar_tarea_incorporacion(cursor, uid, "BINGX", symbol, "TRADE_FUTURES")
                 continue
 
-            qty = float(o.get("executedQty", 0))
-            price = float(o.get("avgPrice", 0))
-
-            # Version 6.7.4 FUTURES FIX
+            # Determinamos la categoría real cruzada
+            cat_db = info.get('categoria_producto')
+            # EXCEPCIÓN: Si en la tabla dice SPOT o CRYPTO pero es el bloque de futuros,
+            # lo movemos a FUTURES para mantener congruencia contable.
+            if cat_db in ['SPOT', 'CRYPTO']:
+                categoria_final = 'FUTURES'
+            else:
+                categoria_final = cat_db # Mantiene CFD, COMMODITIES, etc.
 
             trade_data = {
-                "tradeId": str(o.get("orderId")),  # 🔥 CLAVE
+                "tradeId": str(o.get("orderId")), 
                 "orderId": str(o.get("orderId")),                
                 "symbol": symbol,
                 "side": o.get("side"),
-                "positionSide": o.get("positionSide"),
-                "price": price,
-                "qty": qty,
+                "positionSide": o.get("positionSide", "BOTH"),
+                "price": float(o.get("avgPrice", 0)),
+                "qty": float(o.get("executedQty", 0)),
                 "quoteQty": float(o.get("cumQuote", 0)),
-
                 "commission": abs(float(o.get("commission", 0))),
                 "commissionAsset": "USDT",
-
-                "reduceOnly": o.get("reduceOnly", False),
                 "realizedPnl": float(o.get("profit", 0)),
-
-                "fecha_sql": datetime.utcfromtimestamp(
-                    o.get("updateTime", 0) / 1000
-                ).strftime("%Y-%m-%d %H:%M:%S"),
-
-                "isMaker": False,
-                "es_futuro": True,
-
-                "raw_json": json.dumps(o)  # 🔥 CRÍTICO
+                "fecha_sql": datetime.utcfromtimestamp(update_time / 1000).strftime("%Y-%m-%d %H:%M:%S"),
+                "isMaker": 1 if o.get("isMaker") is True else 0,
+                "categoria": categoria_final,
+                "tipo_investment": info.get('tipo_investment'),
+                "raw_json": json.dumps(o)
             }
 
-            if registrar_trade(
-                cursor,uid,trade_data,info,"BINGX"
-            ):
-
+            if registrar_trade(cursor, uid, trade_data, info, "BINGX"):
                 trades_insertados += 1
 
-        actualizar_punto_sincro(
-            cursor,uid,"BINGX","trades_futures",max_ts
-        )
-
+        actualizar_punto_sincro(cursor, uid, "BINGX", "trades_futures", max_ts)
         print(f"    [OK] Trades futures insertados: {trades_insertados}")
+
     except Exception as e:
         print(f"[BINGX FUTURES ERROR] {e}")
 
