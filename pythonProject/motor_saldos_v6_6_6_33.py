@@ -308,14 +308,15 @@ def actualizar_punto_sincro(cursor, uid, broker, endpoint, nuevo_ts):
     cursor.execute(sql, (uid, broker, endpoint, nuevo_ts))
 
 # ==========================================================
-# 📉 REGISTRO DE TRADES v6.7.0 (PURA FIDELIDAD API)
+# 📉 REGISTRO DE TRADES v6.7.0 (AJUSTADO A TABLA REAL)
 # ==========================================================
 def registrar_trade(cursor, uid, t_data, info_traductor, broker_nombre):
     try:
         # --- BLOQUE 1: LIMPIEZA DE IDENTIFICADORES ---
+        # Usamos id_externo_ref para la clave de integridad del sistema
         trade_id = str(t_data.get('tradeId', ''))
         order_id = str(t_data.get('orderId', '')) if t_data.get('orderId') else None
-        id_externo = f"{uid}-{trade_id}"
+        id_externo_ref = f"{uid}-{trade_id}" 
         
         # --- BLOQUE 2: INGESTA PURA DE SÍMBOLOS ---
         symbol_puro = t_data.get('symbol', 'UNKNOWN')
@@ -329,10 +330,12 @@ def registrar_trade(cursor, uid, t_data, info_traductor, broker_nombre):
         com_nominal = float(t_data.get('commission', 0))
         com_usd = 0.0
         if com_nominal > 0 and com_asset:
+            # Esta función debe existir en tu motor para el cálculo de USD
             precio_com = obtener_precio_usd(cursor, None, com_asset)
             com_usd = com_nominal * precio_com
             
         # --- BLOQUE 4: SEGURO DE VIDA (RAW JSON) ---
+        # Guardamos el dump original por si hay que auditar
         raw_json = json.dumps(t_data)
         
         is_maker = 1 if t_data.get('isMaker', False) else 0
@@ -340,7 +343,9 @@ def registrar_trade(cursor, uid, t_data, info_traductor, broker_nombre):
         pnl_realizado = float(t_data.get('realizedPnl', 0))
         position_side = t_data.get('positionSide') 
         
-        # --- PREPARACIÓN SQL (NOMBRES DE TU TABLA REAL) ---
+        # --- PREPARACIÓN SQL (ESTRICTA CON TU SCHEMA) ---
+        # Eliminada columna 'es_futuro' que no existe en tu DB
+        # Las columnas coinciden con el SHOW COLUMNS que enviaste
         sql = """
             INSERT IGNORE INTO detalle_trades (
                 user_id, traductor_id, broker, categoria_producto, motor_fuente, 
@@ -361,7 +366,7 @@ def registrar_trade(cursor, uid, t_data, info_traductor, broker_nombre):
         
         valores = (
             uid, t_id, broker_nombre, cat_prod, motor_fte, 
-            tipo_inv, id_externo, t_data.get('fecha_sql'), symbol_puro, t_data.get('side'), 
+            tipo_inv, id_externo_ref, t_data.get('fecha_sql'), symbol_puro, t_data.get('side'), 
             position_side, reduce_only, float(t_data.get('price', 0)), float(t_data.get('qty', 0)), 
             com_nominal, com_asset, com_usd, float(t_data.get('quoteQty', 0)), 
             pnl_realizado, is_maker, trade_id, order_id, 
@@ -374,7 +379,6 @@ def registrar_trade(cursor, uid, t_data, info_traductor, broker_nombre):
     except Exception as e:
         print(f"    [ERROR REGISTRO TRADE] {e} | Symbol: {t_data.get('symbol')}")
         return False
-
 # ==========================================================
 # 🟦 PROCESADOR BINGX (V6.8.5 - OPTIMIZADO)
 # ==========================================================
@@ -1026,7 +1030,7 @@ def procesar_binance_cm_futures(db, uid, k, s):
         print(f"    [CM] Binance  Open Orders: {oo_count}")
 
     except Exception as e:
-        print(f"    [CM ERROR en {asset_actual}] {e}"
+        print(f"    [CM ERROR en {asset_actual}] {e}")
 
 
 # ==========================================================
