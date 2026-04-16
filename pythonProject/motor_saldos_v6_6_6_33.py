@@ -76,12 +76,12 @@ def descifrar_dato(t, m):
     except: return None
 
 # ==========================================================
-# 🎯 VINCULACIÓN MAESTRA v6.6.7 - ESCENARIO B (POR EXCHANGE)
+# 🎯 VINCULACIÓN MAESTRA v6.6.7 - UNIVERSAL (Binance & BingX)
 # ==========================================================
 def obtener_traductor_id_universal(cursor, motor_fuente, ticker_api):
     """
-    v6.6.6.31 - Limpiador Universal de Activos (Cripto, Forex, Stocks, Indices)
-    Busca coincidencia exacta y, si falla, aplica limpieza profunda por Broker.
+    v6.6.7 - Rescata IDs sin importar si el motor_fuente exacto cambió.
+    Funciona para Cripto, Forex, Stocks, Indices.
     """
     if not ticker_api: return None
     
@@ -100,47 +100,44 @@ def obtener_traductor_id_universal(cursor, motor_fuente, ticker_api):
     """
     cursor.execute(sql_exacto, (motor_fuente, ticker))
     res = cursor.fetchone()
+    # Si cursor es dictionary=True devolverá dict, si no, tupla. 
+    # Mantenemos la compatibilidad:
     if res: return res
 
     # ---------------------------------------------------------
     # PASO 2: LIMPIADOR UNIVERSAL (Rescate Elástico)
     # ---------------------------------------------------------
-    # Definimos qué limpiar según el broker para llegar al 'underlying' puro
     ticker_limpio = ticker.replace("-", "").replace("/", "").replace("=X", "").replace("^", "")
     u_search = ticker_limpio
 
     if "bingx" in motor_fuente:
-        # Limpieza profunda para BingX (Acciones, Forex, Índices y Cripto)
-        # Quita: NCSK (Stocks), 2USD (Sufijo stocks), USDT/USDC (Paares), _PERP (Futuros)
         for basura in ["NCSK", "2USD", "USDT", "USDC", "USD", "_PERP"]:
             u_search = u_search.replace(basura, "")
             
     elif "binance" in motor_fuente:
-        # Recuperamos la lógica de la v24 para Binance Earn y Stocks
         for basura in ["LD", "STK", "USDT", "USDC"]:
             u_search = u_search.replace(basura, "")
 
-    # Si después de limpiar nos queda algo vacío (caso raro), abortamos rescate
     if not u_search: u_search = ticker_limpio
 
-    # SQL de Rescate: Busca por ticker_motor sin guiones o por el underlying resultante
-    # Usamos LIKE 'broker_%' para que bingx_spot rescate a bingx_standard_futures si es necesario
+    # SQL de Rescate: Busca por ticker_motor sin guiones o por el underlying
+    # El LIKE asegura que si buscas en 'bingx_perpetual' encuentre el ID en 'bingx_commodity'
     sql_rescate = """
         SELECT id, categoria_producto, tipo_investment, underlying, quote_asset 
         FROM sys_traductor_simbolos 
-        WHERE motor_fuente LIKE %s AND is_active = 1
+        WHERE motor_fuente LIKE %s 
         AND (REPLACE(ticker_motor, '-', '') = %s OR underlying = %s)
         LIMIT 1
     """
     
-    # Preparamos el patrón del motor (ej: 'bingx_%' o 'binance_%')
-    motor_patron = f"{motor_fuente.split('_')[0]}%%"
+    # Extrae el nombre del broker (binance o bingx) y añade el comodín para el LIKE
+    broker_base = motor_fuente.split('_')[0]
+    motor_patron = f"{broker_base}%"
     
     cursor.execute(sql_rescate, (motor_patron, ticker_limpio, u_search))
     res_rescate = cursor.fetchone()
     
-    if res_rescate:
-        return res_rescate
+    return res_rescate # Retorna el resultado o None si no hubo match
 
     # Si llegamos aquí, el activo realmente no existe en el traductor
     return None
