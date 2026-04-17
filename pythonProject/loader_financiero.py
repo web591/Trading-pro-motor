@@ -37,7 +37,7 @@ if proxy_url:
 # 3. EJECUCIÓN DEL MOTOR FINANCIERO
 try:
     import config  # Importamos el que acabamos de crear
-    import motor_financiero_v1_3_0 as m
+    import motor_financiero_v1_3_4 as m
     
     print("🚀 [CLOUD] Iniciando Auditoría Financiera...")
     
