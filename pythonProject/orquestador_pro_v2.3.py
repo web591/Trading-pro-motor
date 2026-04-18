@@ -10,7 +10,7 @@ MOTORES = [
     {"nombre": "CONTABLE", "script": "pythonProject/motor_saldos_v6_6_6_33.py"},
     # {"nombre": "FUNDAMENTALES", "script": "pythonProject/fundamentales_engine_v1_5.py"},
     {"nombre": "MAESTRO", "script": "pythonProject/CÓDIGO_MAESTRO_V2_23.py"},
-    {"nombre": "FINANCIERO", "script": "pythonProject/motor_financiero_v1_3_4.py"}
+    {"nombre": "FINANCIERO", "script": "pythonProject/motor_financiero_v1_3_6.py"}
 ]
 
 procesos = {}
