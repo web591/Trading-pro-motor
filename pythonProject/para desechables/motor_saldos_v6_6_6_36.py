@@ -719,19 +719,21 @@ def procesar_binance_um_futures(db, uid, k, s):
                 s_count += 1
         print(f"    [UM] Saldos: {s_count}")
 
-        # 2. TRADES HISTÓRICOS UM CON BLOQUES
-        start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINANCE", "trades_um_futures")
+# 2. TRADES HISTÓRICOS CM CON BLOQUES Y SEGURIDAD
+        start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINANCE", "trades_cm_futures")
         punto_rastreo = start_ts - 60000 
         ahora_ms = int(time.time() * 1000)
         ventana_7d = 7 * 24 * 60 * 60 * 1000 
-
-        cursor.execute("SELECT id, ticker_motor FROM sys_traductor_simbolos WHERE motor_fuente = 'binance_usdt_future'")
+        
+        cursor.execute("SELECT id, ticker_motor FROM sys_traductor_simbolos WHERE motor_fuente = 'binance_coin_future'")
         diccionario = cursor.fetchall()
         t_count = 0
 
         for item in diccionario:
-            print(f"      [*] Analizando UM: {item['ticker_motor']}...")
+            symbol = item['ticker_motor']
+            print(f"      [*] Analizando CM: {symbol}...")
             current_start = punto_rastreo
+            
             while current_start < ahora_ms:
                 # Margen de seguridad: 1 minuto menos que los 7 días
                 current_end = current_start + ventana_7d - 60000
@@ -739,25 +741,26 @@ def procesar_binance_um_futures(db, uid, k, s):
                     current_end = ahora_ms
 
                 try:
-                    trades = client.get_account_trades(symbol=item['ticker_motor'], startTime=current_start, endTime=current_end)
+                    trades = client.get_account_trades(symbol=symbol, startTime=current_start, endTime=current_end)
                     if trades:
-                        print(f"        [OK] Bloque UM {item['ticker_motor']}: {len(trades)} encontrados.")
+                        print(f"        [OK] Bloque CM {symbol}: {len(trades)} encontrados.")
                         for t in sorted(trades, key=lambda x: x['time']):
                             t_f = {
                                 'tradeId': str(t['id']), 'orderId': str(t['orderId']),
                                 'symbol': t['symbol'], 'side': t['side'],
                                 'positionSide': t.get('positionSide'), 'price': float(t.get('price', 0)),
-                                'qty': float(t.get('qty', 0)), 'quoteQty': float(t.get('quoteQty', 0)), 
+                                'qty': float(t.get('qty', 0)), 'quoteQty': float(t.get('baseQty', 0)),
                                 'commission': float(t.get('commission', 0)), 'commissionAsset': t.get('commissionAsset'),
                                 'realizedPnl': float(t.get('realizedPnl', 0)),
                                 'fecha_sql': datetime.fromtimestamp(t['time']/1000).strftime('%Y-%m-%d %H:%M:%S'),
                                 'isMaker': t.get('maker', False), 'es_futuro': True
                             }
-                            if registrar_trade(cursor, uid, t_f, item, "BINANCE"): t_count += 1
+                            if registrar_trade(cursor, uid, t_f, item, "BINANCE"):
+                                t_count += 1
                 except Exception as e:
-                    print(f"      [!] Error bloque UM {item['ticker_motor']}: {e}")
+                    print(f"      [!] Error bloque CM {symbol}: {e}")
                     current_start = current_end + 1
-                    continue # IMPORTANTE: No romper el flujo
+                    continue # No romper para que siga con el historial
                 
                 current_start = current_end + 1
                 if current_start < ahora_ms: time.sleep(0.05)
@@ -980,7 +983,7 @@ def procesar_binance_cm_positions(db, uid, k, s):
 # Version 6.6.6.26
 # ==========================================================
 def ejecutar_ciclo_completo():
-    print(f"💎 MOTOR v6.6.6.37 - SALDOS + TRADES + OPEN ORDERS + POSITION BINANCE-BINGX INSERT HOMOGENEOS")
+    print(f"💎 MOTOR v6.6.6.36 - SALDOS + TRADES + OPEN ORDERS + POSITION BINANCE-BINGX INSERT HOMOGENEOS")
     print(f"\n{'='*65}\n🔄 INICIO CICLO: {datetime.now().strftime('%H:%M:%S')}\n{'='*65}")
 
     db = None
