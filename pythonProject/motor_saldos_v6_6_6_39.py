@@ -330,9 +330,15 @@ def registrar_trade(cursor, uid, t_data, info_traductor, broker_nombre):
         # --- BLOQUE 2: INGESTA PURA DE SÍMBOLOS ---
         symbol_puro = t_data.get('symbol', 'UNKNOWN')
         t_id = info_traductor['id'] if info_traductor else None
-        cat_prod = info_traductor['categoria_producto'] if info_traductor else 'SPOT'
-        tipo_inv = info_traductor['tipo_investment'] if info_traductor else 'CRYPTO'
-        motor_fte = info_traductor['motor_fuente'] if info_traductor else f"{broker_nombre.lower()}_auto"
+        # 🔐 BLOQUE SEGURO v1.1
+        if info_traductor:
+            cat_prod = info_traductor.get('categoria_producto', 'SPOT')
+            tipo_inv = info_traductor.get('tipo_investment', 'CRYPTO')
+            motor_fte = info_traductor.get('motor_fuente', f"{broker_nombre.lower()}_auto")
+        else:
+            cat_prod = 'SPOT'
+            tipo_inv = 'CRYPTO'
+            motor_fte = f"{broker_nombre.lower()}_auto"
 
         # --- BLOQUE 3: COMISIONES INTELIGENTES ---
         com_asset = t_data.get('commissionAsset')
@@ -592,7 +598,6 @@ def procesar_bingx_positions(db, uid, ak, as_):
         print(f"    [OK] Positions Bingx: {p_count} activas procesadas.")
     except Exception as e: print(f"    [BINGX POS ERROR] {e}")
 
-
 # ==========================================================
 # 🟨 PROCESADOR BINANCE SPOT (CON BLOQUES Y SEGURIDAD)
 # ==========================================================
@@ -745,13 +750,10 @@ def procesar_binance_um_futures(db, uid, k, s):
             print(f"      [*] Analizando UM: {item['ticker_motor']}...")
             current_start = punto_rastreo
             while current_start < ahora_ms:
+                # Margen de seguridad: 1 minuto menos que los 7 días
                 current_end = current_start + ventana_7d - 60000
                 if current_end > ahora_ms:
                     current_end = ahora_ms
-
-                # Imprimir bloque exacto para trazabilidad como en Spot
-                fecha_bloque = datetime.fromtimestamp(current_start/1000).strftime('%Y-%m-%d')
-                print(f"        [i] Consultando bloque UM desde: {fecha_bloque}...")
 
                 try:
                     trades = client.get_account_trades(symbol=item['ticker_motor'], startTime=current_start, endTime=current_end)
@@ -766,16 +768,16 @@ def procesar_binance_um_futures(db, uid, k, s):
                                 'commission': float(t.get('commission', 0)), 'commissionAsset': t.get('commissionAsset'),
                                 'realizedPnl': float(t.get('realizedPnl', 0)),
                                 'fecha_sql': datetime.fromtimestamp(t['time']/1000).strftime('%Y-%m-%d %H:%M:%S'),
-                                'isMaker': t.get('maker', False), 'es_futuro': True,
-                                'categoria_producto': 'UM' # <--- SOLUCIÓN AL ERROR KEYERROR
+                                'isMaker': t.get('maker', False), 'es_futuro': True
                             }
                             if registrar_trade(cursor, uid, t_f, item, "BINANCE"): t_count += 1
                 except Exception as e:
                     print(f"      [!] Error bloque UM {item['ticker_motor']}: {e}")
-                    # No hacemos break aquí para intentar el siguiente bloque de esta moneda
+                    current_start = current_end + 1
+                    continue # IMPORTANTE: No romper el flujo
                 
                 current_start = current_end + 1
-                time.sleep(0.2) # <--- FRENO ANTI ASFIXIA (200ms) GARANTIZADO POR ITERACIÓN
+                if current_start < ahora_ms: time.sleep(0.05)
         
         actualizar_punto_sincro(cursor, uid, "BINANCE", "trades_um_futures", ahora_ms)
         print(f"    [UM] Trades Futures: {t_count} procesados.")
@@ -863,13 +865,25 @@ def procesar_binance_cm_futures(db, uid, k, s):
         cursor.execute("SET SESSION wait_timeout = 28800")
         
         print(f"    [CM] Iniciando Binance CM Futures...")
-        # ... (Tu código de saldos se mantiene idéntico)
+        cursor.execute("DELETE FROM sys_saldos_usuarios WHERE user_id = %s AND broker_name = 'BINANCE' AND tipo_cuenta = 'CM_FUTURES'", (uid,))
+
+        # 1. SALDOS CM
+        acc = client.balance()
+        s_count = 0
+        for b in acc:
+            asset_actual = b['asset']
+            total = float(b.get('balance', 0))
+            if total > 0.000001:
+                info = obtener_traductor_id_universal(cursor, "binance_coin_future", asset_actual)
+                registrar_saldo(cursor, uid, info, total, 0.0, asset_actual, "BINANCE", "CM_FUTURES")
+                s_count += 1
+        print(f"    [CM] Saldos: {s_count}")
 
         # 2. TRADES HISTÓRICOS CM CON BLOQUES Y SEGURIDAD
         start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINANCE", "trades_cm_futures")
-        punto_rastreo = start_ts - 60000 
+        punto_rastreo = start_ts - 60000 # 🛡️ Minuto de seguridad
         ahora_ms = int(time.time() * 1000)
-        ventana_7d = 7 * 24 * 60 * 60 * 1000 
+        ventana_7d = 7 * 24 * 60 * 60 * 1000 # Límite de Binance CM
         
         cursor.execute("SELECT id, ticker_motor FROM sys_traductor_simbolos WHERE motor_fuente = 'binance_coin_future'")
         diccionario = cursor.fetchall()
@@ -880,12 +894,9 @@ def procesar_binance_cm_futures(db, uid, k, s):
             print(f"      [*] Analizando CM: {symbol}...")
             current_start = punto_rastreo
             
+            # Caminamos en bloques de 7 días por cada moneda
             while current_start < ahora_ms:
                 current_end = min(current_start + ventana_7d, ahora_ms)
-                
-                fecha_bloque = datetime.fromtimestamp(current_start/1000).strftime('%Y-%m-%d')
-                print(f"        [i] Consultando bloque CM desde: {fecha_bloque}...")
-
                 try:
                     trades = client.get_account_trades(symbol=symbol, startTime=current_start, endTime=current_end)
                     if trades:
@@ -899,25 +910,20 @@ def procesar_binance_cm_futures(db, uid, k, s):
                                 'commission': float(t.get('commission', 0)), 'commissionAsset': t.get('commissionAsset'),
                                 'realizedPnl': float(t.get('realizedPnl', 0)),
                                 'fecha_sql': datetime.fromtimestamp(t['time']/1000).strftime('%Y-%m-%d %H:%M:%S'),
-                                'isMaker': t.get('maker', False), 'es_futuro': True,
-                                'categoria_producto': 'CM' # <--- SOLUCIÓN AL ERROR KEYERROR
+                                'isMaker': t.get('maker', False), 'es_futuro': True
                             }
                             if registrar_trade(cursor, uid, t_f, item, "BINANCE"):
                                 t_count += 1
                 except Exception as e:
                     print(f"      [!] Error bloque CM {symbol}: {e}")
-                    # En CM a veces la moneda ya no existe, usamos break si da error de API duro, 
-                    # pero es mejor solo un log si queremos histórico profundo.
-                    if "Too many requests" in str(e):
-                        time.sleep(2) # Castigo extra de 2 segs si nos regañó Binance
+                    break # Salto al siguiente símbolo si falla la API
                 
-                current_start = current_end + 1
-                time.sleep(0.2) # <--- FRENO ANTI ASFIXIA (200ms) GARANTIZADO POR ITERACIÓN
+                current_start = current_end
+                if current_start < ahora_ms: time.sleep(0.1) # Respeto al Rate Limit
 
         actualizar_punto_sincro(cursor, uid, "BINANCE", "trades_cm_futures", ahora_ms)
         print(f"    [CM] Trades Futures procesados: {t_count}") 
         db.commit()
-
         # 3. OPEN ORDERS CM
         cursor.execute("SELECT ticker_motor FROM sys_traductor_simbolos WHERE motor_fuente = 'binance_coin_future'")
         simbolos = cursor.fetchall()
@@ -991,7 +997,7 @@ def procesar_binance_cm_positions(db, uid, k, s):
 # Version 6.6.6.26
 # ==========================================================
 def ejecutar_ciclo_completo():
-    print(f"💎 MOTOR v6.6.6.39 - SALDOS + TRADES + OPEN ORDERS + POSITION BINANCE-BINGX INSERT HOMOGENEOS")
+    print(f"💎 MOTOR v6.6.6.38 - SALDOS + TRADES + OPEN ORDERS + POSITION BINANCE-BINGX INSERT HOMOGENEOS")
     print(f"\n{'='*65}\n🔄 INICIO CICLO: {datetime.now().strftime('%H:%M:%S')}\n{'='*65}")
 
     db = None
