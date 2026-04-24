@@ -43,7 +43,7 @@ if __name__ == "__main__":
     try:
         print("🚀 [LOADER] Lanzando motor en modo sincrónico...")
         # Al correr runpy, el motor heredará estas variables de entorno
-        runpy.run_path("motor_saldos_v6_6_6_38.py", run_name="__main__")
+        runpy.run_path("motor_saldos_v6_6_6_39.py", run_name="__main__")
         print("🏁 [LOADER] Motor finalizó correctamente su ciclo.")
     except Exception as e:
         print(f"❌ [ERROR]: {e}")

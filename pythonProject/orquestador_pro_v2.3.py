@@ -7,7 +7,7 @@ import os
 
 MOTORES = [
     {"nombre": "PRICE_SYNC", "script": "pythonProject/PRICE_SYNC_V1_03.py"},
-    {"nombre": "CONTABLE", "script": "pythonProject/motor_saldos_v6_6_6_38.py"},
+    {"nombre": "CONTABLE", "script": "pythonProject/motor_saldos_v6_6_6_39.py"},
     # {"nombre": "FUNDAMENTALES", "script": "pythonProject/fundamentales_engine_v1_5.py"},
     {"nombre": "MAESTRO", "script": "pythonProject/CÓDIGO_MAESTRO_V2_23.py"},
     {"nombre": "FINANCIERO", "script": "pythonProject/motor_financiero_v1_3_4.py"}
