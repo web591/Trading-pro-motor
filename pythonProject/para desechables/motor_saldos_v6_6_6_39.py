@@ -711,7 +711,7 @@ def procesar_binance(db, uid, k, s):
         cursor.close()
 
 # ==========================================================
-# 🟦 PROCESADOR BINANCE UM FUTURES - REPARADO (ESTILO v24)
+# 🟦 PROCESADOR BINANCE UM FUTURES - REPARADO (ESTILO v24.1)
 # ==========================================================
 def procesar_binance_um_futures(db, uid, k, s):
     asset_actual = "INICIO" 
@@ -736,7 +736,7 @@ def procesar_binance_um_futures(db, uid, k, s):
                 s_count += 1
         print(f"    [UM] Saldos: {s_count}")
 
-        # 2. TRADES HISTÓRICOS UM CON BLOQUES
+        # 2. TRADES HISTÓRICOS UM CON BLOQUES Y SEGURIDAD REFORZADA
         start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINANCE", "trades_um_futures")
         punto_rastreo = start_ts - 60000 
         ahora_ms = int(time.time() * 1000)
@@ -747,18 +747,19 @@ def procesar_binance_um_futures(db, uid, k, s):
         t_count = 0
 
         for item in diccionario:
-            print(f"      [*] Analizando UM: {item['ticker_motor']}...")
+            symbol = item['ticker_motor']
+            print(f"      [*] Analizando UM: {symbol}...")
             current_start = punto_rastreo
+            
             while current_start < ahora_ms:
                 # Margen de seguridad: 1 minuto menos que los 7 días
-                current_end = current_start + ventana_7d - 60000
-                if current_end > ahora_ms:
-                    current_end = ahora_ms
+                current_end = min(current_start + ventana_7d - 60000, ahora_ms)
 
                 try:
-                    trades = client.get_account_trades(symbol=item['ticker_motor'], startTime=current_start, endTime=current_end)
+                    trades = client.get_account_trades(symbol=symbol, startTime=current_start, endTime=current_end)
+                    
                     if trades:
-                        print(f"        [OK] Bloque UM {item['ticker_motor']}: {len(trades)} encontrados.")
+                        print(f"        [OK] Bloque UM {symbol}: {len(trades)} encontrados.")
                         for t in sorted(trades, key=lambda x: x['time']):
                             t_f = {
                                 'tradeId': str(t['id']), 'orderId': str(t['orderId']),
@@ -770,14 +771,23 @@ def procesar_binance_um_futures(db, uid, k, s):
                                 'fecha_sql': datetime.fromtimestamp(t['time']/1000).strftime('%Y-%m-%d %H:%M:%S'),
                                 'isMaker': t.get('maker', False), 'es_futuro': True
                             }
-                            if registrar_trade(cursor, uid, t_f, item, "BINANCE"): t_count += 1
+                            if registrar_trade(cursor, uid, t_f, item, "BINANCE"): 
+                                t_count += 1
+                    
+                    # Avanzamos si la petición fue exitosa
+                    current_start = current_end + 60000 # Saltamos al siguiente bloque
+                    time.sleep(1.0) # Pausa obligatoria entre peticiones para control de Weight
+
                 except Exception as e:
-                    print(f"      [!] Error bloque UM {item['ticker_motor']}: {e}")
-                    current_start = current_end + 1
-                    continue # IMPORTANTE: No romper el flujo
-                
-                current_start = current_end + 1
-                if current_start < ahora_ms: time.sleep(0.05)
+                    error_str = str(e).upper()
+                    if "429" in error_str or "-1003" in error_str or "LIMIT" in error_str:
+                        print(f"⚠️ [RATE LIMIT UM] IP Agotada en {symbol}. Esperando 45 segundos...")
+                        time.sleep(45) 
+                        continue # Reintenta el mismo bloque
+                    else:
+                        print(f"      [!] Error en UM {symbol}: {e}")
+                        current_start = current_end + 60000 
+                        break # Salta al siguiente símbolo si es un error distinto a Rate Limit
         
         actualizar_punto_sincro(cursor, uid, "BINANCE", "trades_um_futures", ahora_ms)
         print(f"    [UM] Trades Futures: {t_count} procesados.")
@@ -854,7 +864,7 @@ def procesar_binance_um_positions(db, uid, k, s):
         cursor.close()
 
 # ==========================================================
-# 🟧 PROCESADOR BINANCE CM FUTURES - REPARADO (ESTILO v24)
+# 🟧 PROCESADOR BINANCE CM FUTURES - REPARADO (ESTILO v24.1)
 # ==========================================================
 def procesar_binance_cm_futures(db, uid, k, s):
     asset_actual = "INICIO"
@@ -881,9 +891,9 @@ def procesar_binance_cm_futures(db, uid, k, s):
 
         # 2. TRADES HISTÓRICOS CM CON BLOQUES Y SEGURIDAD
         start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINANCE", "trades_cm_futures")
-        punto_rastreo = start_ts - 60000 # 🛡️ Minuto de seguridad
+        punto_rastreo = start_ts - 60000 
         ahora_ms = int(time.time() * 1000)
-        ventana_7d = 7 * 24 * 60 * 60 * 1000 # Límite de Binance CM
+        ventana_7d = 7 * 24 * 60 * 60 * 1000 
         
         cursor.execute("SELECT id, ticker_motor FROM sys_traductor_simbolos WHERE motor_fuente = 'binance_coin_future'")
         diccionario = cursor.fetchall()
@@ -894,11 +904,12 @@ def procesar_binance_cm_futures(db, uid, k, s):
             print(f"      [*] Analizando CM: {symbol}...")
             current_start = punto_rastreo
             
-            # Caminamos en bloques de 7 días por cada moneda
             while current_start < ahora_ms:
                 current_end = min(current_start + ventana_7d, ahora_ms)
                 try:
+                    # PETICIÓN A API
                     trades = client.get_account_trades(symbol=symbol, startTime=current_start, endTime=current_end)
+                    
                     if trades:
                         print(f"        [OK] Bloque CM {symbol}: {len(trades)} encontrados.")
                         for t in sorted(trades, key=lambda x: x['time']):
@@ -914,16 +925,30 @@ def procesar_binance_cm_futures(db, uid, k, s):
                             }
                             if registrar_trade(cursor, uid, t_f, item, "BINANCE"):
                                 t_count += 1
+                    
+                    # Si la petición tuvo éxito, avanzamos el tiempo
+                    current_start = current_end
+                    # Pausa obligatoria entre bloques para no saturar
+                    time.sleep(1.5) 
+
                 except Exception as e:
-                    print(f"      [!] Error bloque CM {symbol}: {e}")
-                    break # Salto al siguiente símbolo si falla la API
-                
-                current_start = current_end
-                if current_start < ahora_ms: time.sleep(0.3) # Respeto al Rate Limit
+                    error_str = str(e).upper()
+                    if "429" in error_str or "-1003" in error_str or "LIMIT" in error_str:
+                        print(f"⚠️ [RATE LIMIT CM] IP Agotada en {symbol}. Esperando 45 segundos...")
+                        time.sleep(45) # Pausa larga para limpiar el weight de la IP
+                        continue # Reintenta el MISMO bloque (no avanza current_start)
+                    else:
+                        print(f"      [!] Error NO recuperable en CM {symbol}: {e}")
+                        # En caso de error raro (ej. símbolo inexistente), saltamos bloque para no encallarnos
+                        current_start = current_end 
+                        break 
 
         actualizar_punto_sincro(cursor, uid, "BINANCE", "trades_cm_futures", ahora_ms)
         print(f"    [CM] Trades Futures procesados: {t_count}") 
         db.commit()
+
+    except Exception as e:
+        print(f"    [CM CRITICAL ERROR] {e}")
         # 3. OPEN ORDERS CM
         cursor.execute("SELECT ticker_motor FROM sys_traductor_simbolos WHERE motor_fuente = 'binance_coin_future'")
         simbolos = cursor.fetchall()
