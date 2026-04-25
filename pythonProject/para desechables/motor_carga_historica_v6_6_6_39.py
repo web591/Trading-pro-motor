@@ -10,26 +10,6 @@ from datetime import datetime
 import config
 import sys
 import socket
-import json
-
-def verificar_y_obtener_traductor(cursor, uid, trade_id, symbol, motor_fuente):
-    """
-    Verifica si el trade ya existe. Si no, busca el traductor.
-    Retorna el 'item' del traductor o None si debemos saltarlo.
-    """
-    # 1. Validación de Existencia (Regla de Oro 2)
-    cursor.execute("SELECT id FROM sys_detalle_trades WHERE trade_id_externo=%s AND user_id=%s AND broker='BINANCE'", (str(trade_id), uid))
-    if cursor.fetchone():
-        print(f"        \033[93m[SKIP]\033[0m Trade {trade_id} ya existe en DB. Saltando...")
-        return None
-
-    # 2. Obtener el Traductor ID
-    cursor.execute("SELECT * FROM sys_traductor_simbolos WHERE ticker_motor=%s AND motor_fuente=%s", (symbol, motor_fuente))
-    item = cursor.fetchone()
-    if not item:
-        print(f"        \033[91m[!] Símbolo {symbol} no encontrado en {motor_fuente}\033[0m")
-    
-    return item
 
 def obtener_lock(cursor, lock_name, timeout=600):
     # Identificamos si es GitHub o Local para el log de la DB
@@ -350,9 +330,15 @@ def registrar_trade(cursor, uid, t_data, info_traductor, broker_nombre):
         # --- BLOQUE 2: INGESTA PURA DE SÍMBOLOS ---
         symbol_puro = t_data.get('symbol', 'UNKNOWN')
         t_id = info_traductor['id'] if info_traductor else None
-        cat_prod = info_traductor['categoria_producto'] if info_traductor else 'SPOT'
-        tipo_inv = info_traductor['tipo_investment'] if info_traductor else 'CRYPTO'
-        motor_fte = info_traductor['motor_fuente'] if info_traductor else f"{broker_nombre.lower()}_auto"
+        # 🔐 BLOQUE SEGURO v1.1
+        if info_traductor:
+            cat_prod = info_traductor.get('categoria_producto', 'SPOT')
+            tipo_inv = info_traductor.get('tipo_investment', 'CRYPTO')
+            motor_fte = info_traductor.get('motor_fuente', f"{broker_nombre.lower()}_auto")
+        else:
+            cat_prod = 'SPOT'
+            tipo_inv = 'CRYPTO'
+            motor_fte = f"{broker_nombre.lower()}_auto"
 
         # --- BLOQUE 3: COMISIONES INTELIGENTES ---
         com_asset = t_data.get('commissionAsset')
@@ -612,8 +598,7 @@ def procesar_bingx_positions(db, uid, ak, as_):
         print(f"    [OK] Positions Bingx: {p_count} activas procesadas.")
     except Exception as e: print(f"    [BINGX POS ERROR] {e}")
 
-
-# ==========================================================
+# ========================================================== 
 # 🟨 PROCESADOR BINANCE SPOT (CON BLOQUES Y SEGURIDAD)
 # ==========================================================
 def procesar_binance(db, uid, k, s):
@@ -621,9 +606,7 @@ def procesar_binance(db, uid, k, s):
     cursor = db.cursor(dictionary=True)
     cursor.execute("SET SESSION wait_timeout = 28800")
     cursor.execute("SET SESSION interactive_timeout = 28800")
-    # 1. Si la tabla está bloqueada, espera 100 segundos antes de dar error
     cursor.execute("SET SESSION innodb_lock_wait_timeout = 100")
-    # 2. Asegúrate de que cada cambio se grabe de inmediato en el disco
     cursor.execute("SET AUTOCOMMIT = 1")
     proxies = {'http': os.getenv('PROXY_URL'), 'https': os.getenv('PROXY_URL')}
     
@@ -656,11 +639,8 @@ def procesar_binance(db, uid, k, s):
             
             current_start = punto_rastreo
             while current_start < ahora_ms:
-                # 1. Aseguramos que el bloque sea ligeramente MENOR a 24h (restando 1000ms)
-                # Esto garantiza que Binance nunca nos de el error de restricción de tiempo
                 current_end = current_start + ventana_24h - 1000 
                 
-                # 2. No podemos pedir el futuro
                 if current_end > ahora_ms:
                     current_end = ahora_ms
 
@@ -690,21 +670,16 @@ def procesar_binance(db, uid, k, s):
                                 
                 except Exception as e:
                     print(f"      [!] Error bloque {item['ticker_motor']} ({fecha_bloque}): {e}")
-                    # Si falla, saltamos al siguiente bloque para no quedarnos infinitamente aquí
                     current_start = current_end + 1
                     continue 
                 
-                # 3. Avanzamos el puntero al siguiente bloque
                 current_start = current_end + 1 
                 if current_start < ahora_ms: 
-                    time.sleep(0.05) # Respeto al Rate Limit de Binance
+                    time.sleep(0.05)
         
         actualizar_punto_sincro(cursor, uid, "BINANCE", "trades_spot", ahora_ms)
-        print(f"    [SPOT] Binance Trades: {t_count} procesados.") # <--- ESTA YA ESTABA, PERO AHORA SABRÁS QUE LLEGÓ AQUÍ
-        db.commit() # <--- IMPORTANTE GUARDAR AQUÍ
-    except Exception as e:
-        print(f"    [!] Error General en Spot: {e}")
-
+        print(f"    [SPOT] Binance Trades: {t_count} procesados.")
+        db.commit()
 
         # --- OPEN ORDERS ---
         cursor.execute("DELETE FROM sys_open_orders_spot WHERE user_id = %s AND broker_name = 'BINANCE'", (uid,))
@@ -721,7 +696,8 @@ def procesar_binance(db, uid, k, s):
         print(f"    [OK] Binance Spot Open Orders: {len(open_orders)} registradas.")
 
     except Exception as e:
-        print(f"    [!] Error Crítico en Binance User {uid}: {e}")
+        print(f"    [!] Error General en Spot: {e}")
+
     finally:
         cursor.close()
 
@@ -765,13 +741,10 @@ def procesar_binance_um_futures(db, uid, k, s):
             print(f"      [*] Analizando UM: {item['ticker_motor']}...")
             current_start = punto_rastreo
             while current_start < ahora_ms:
+                # Margen de seguridad: 1 minuto menos que los 7 días
                 current_end = current_start + ventana_7d - 60000
                 if current_end > ahora_ms:
                     current_end = ahora_ms
-
-                # Imprimir bloque exacto para trazabilidad como en Spot
-                fecha_bloque = datetime.fromtimestamp(current_start/1000).strftime('%Y-%m-%d')
-                print(f"        [i] Consultando bloque UM desde: {fecha_bloque}...")
 
                 try:
                     trades = client.get_account_trades(symbol=item['ticker_motor'], startTime=current_start, endTime=current_end)
@@ -786,16 +759,16 @@ def procesar_binance_um_futures(db, uid, k, s):
                                 'commission': float(t.get('commission', 0)), 'commissionAsset': t.get('commissionAsset'),
                                 'realizedPnl': float(t.get('realizedPnl', 0)),
                                 'fecha_sql': datetime.fromtimestamp(t['time']/1000).strftime('%Y-%m-%d %H:%M:%S'),
-                                'isMaker': t.get('maker', False), 'es_futuro': True,
-                                'categoria_producto': 'UM' # <--- SOLUCIÓN AL ERROR KEYERROR
+                                'isMaker': t.get('maker', False), 'es_futuro': True
                             }
                             if registrar_trade(cursor, uid, t_f, item, "BINANCE"): t_count += 1
                 except Exception as e:
                     print(f"      [!] Error bloque UM {item['ticker_motor']}: {e}")
-                    # No hacemos break aquí para intentar el siguiente bloque de esta moneda
+                    current_start = current_end + 1
+                    continue # IMPORTANTE: No romper el flujo
                 
                 current_start = current_end + 1
-                time.sleep(0.2) # <--- FRENO ANTI ASFIXIA (200ms) GARANTIZADO POR ITERACIÓN
+                if current_start < ahora_ms: time.sleep(0.05)
         
         actualizar_punto_sincro(cursor, uid, "BINANCE", "trades_um_futures", ahora_ms)
         print(f"    [UM] Trades Futures: {t_count} procesados.")
@@ -883,13 +856,25 @@ def procesar_binance_cm_futures(db, uid, k, s):
         cursor.execute("SET SESSION wait_timeout = 28800")
         
         print(f"    [CM] Iniciando Binance CM Futures...")
-        # ... (Tu código de saldos se mantiene idéntico)
+        cursor.execute("DELETE FROM sys_saldos_usuarios WHERE user_id = %s AND broker_name = 'BINANCE' AND tipo_cuenta = 'CM_FUTURES'", (uid,))
+
+        # 1. SALDOS CM
+        acc = client.balance()
+        s_count = 0
+        for b in acc:
+            asset_actual = b['asset']
+            total = float(b.get('balance', 0))
+            if total > 0.000001:
+                info = obtener_traductor_id_universal(cursor, "binance_coin_future", asset_actual)
+                registrar_saldo(cursor, uid, info, total, 0.0, asset_actual, "BINANCE", "CM_FUTURES")
+                s_count += 1
+        print(f"    [CM] Saldos: {s_count}")
 
         # 2. TRADES HISTÓRICOS CM CON BLOQUES Y SEGURIDAD
         start_ts = obtener_punto_inicio_sincro(cursor, uid, "BINANCE", "trades_cm_futures")
-        punto_rastreo = start_ts - 60000 
+        punto_rastreo = start_ts - 60000 # 🛡️ Minuto de seguridad
         ahora_ms = int(time.time() * 1000)
-        ventana_7d = 7 * 24 * 60 * 60 * 1000 
+        ventana_7d = 7 * 24 * 60 * 60 * 1000 # Límite de Binance CM
         
         cursor.execute("SELECT id, ticker_motor FROM sys_traductor_simbolos WHERE motor_fuente = 'binance_coin_future'")
         diccionario = cursor.fetchall()
@@ -900,12 +885,9 @@ def procesar_binance_cm_futures(db, uid, k, s):
             print(f"      [*] Analizando CM: {symbol}...")
             current_start = punto_rastreo
             
+            # Caminamos en bloques de 7 días por cada moneda
             while current_start < ahora_ms:
                 current_end = min(current_start + ventana_7d, ahora_ms)
-                
-                fecha_bloque = datetime.fromtimestamp(current_start/1000).strftime('%Y-%m-%d')
-                print(f"        [i] Consultando bloque CM desde: {fecha_bloque}...")
-
                 try:
                     trades = client.get_account_trades(symbol=symbol, startTime=current_start, endTime=current_end)
                     if trades:
@@ -919,25 +901,20 @@ def procesar_binance_cm_futures(db, uid, k, s):
                                 'commission': float(t.get('commission', 0)), 'commissionAsset': t.get('commissionAsset'),
                                 'realizedPnl': float(t.get('realizedPnl', 0)),
                                 'fecha_sql': datetime.fromtimestamp(t['time']/1000).strftime('%Y-%m-%d %H:%M:%S'),
-                                'isMaker': t.get('maker', False), 'es_futuro': True,
-                                'categoria_producto': 'CM' # <--- SOLUCIÓN AL ERROR KEYERROR
+                                'isMaker': t.get('maker', False), 'es_futuro': True
                             }
                             if registrar_trade(cursor, uid, t_f, item, "BINANCE"):
                                 t_count += 1
                 except Exception as e:
                     print(f"      [!] Error bloque CM {symbol}: {e}")
-                    # En CM a veces la moneda ya no existe, usamos break si da error de API duro, 
-                    # pero es mejor solo un log si queremos histórico profundo.
-                    if "Too many requests" in str(e):
-                        time.sleep(2) # Castigo extra de 2 segs si nos regañó Binance
+                    break # Salto al siguiente símbolo si falla la API
                 
-                current_start = current_end + 1
-                time.sleep(0.2) # <--- FRENO ANTI ASFIXIA (200ms) GARANTIZADO POR ITERACIÓN
+                current_start = current_end
+                if current_start < ahora_ms: time.sleep(0.1) # Respeto al Rate Limit
 
         actualizar_punto_sincro(cursor, uid, "BINANCE", "trades_cm_futures", ahora_ms)
         print(f"    [CM] Trades Futures procesados: {t_count}") 
         db.commit()
-
         # 3. OPEN ORDERS CM
         cursor.execute("SELECT ticker_motor FROM sys_traductor_simbolos WHERE motor_fuente = 'binance_coin_future'")
         simbolos = cursor.fetchall()
@@ -1006,270 +983,6 @@ def procesar_binance_cm_positions(db, uid, k, s):
     finally:
         cursor.close()
 
-def procesar_csv_spot(cursor, uid, fila):
-    # Cabeceras SPOT: symbol,id,orderId,orderListId,price,qty,quoteQty,commission,commissionAsset,time,isBuyer...
-    trade_id = fila['id']
-    symbol = fila['symbol']
-    
-    item = verificar_y_obtener_traductor(cursor, uid, trade_id, symbol, 'binance_spot')
-    if not item: return False
-
-    # Convertir 18-10-2021 21:04:19 a YYYY-MM-DD HH:MM:SS
-    fecha_dt = datetime.strptime(fila['time'], '%d-%m-%Y %H:%M:%S')
-    
-    t_f = {
-        'tradeId': str(trade_id),
-        'orderId': str(fila['orderId']),
-        'symbol': symbol,
-        'side': 'BUY' if fila['isBuyer'] == 'True' else 'SELL',
-        'price': float(fila['price']),
-        'qty': float(fila['qty']),
-        'quoteQty': float(fila['quoteQty']),
-        'commission': float(fila['commission']),
-        'commissionAsset': fila['commissionAsset'],
-        'fecha_sql': fecha_dt.strftime('%Y-%m-%d %H:%M:%S'),
-        'isMaker': fila['isMaker'] == 'True',
-        'es_futuro': False,
-        'json_raw': json.dumps(fila) # JSON SINTÉTICO PARA AUDITORÍA
-    }
-    
-    print(f"        \033[92m[NEW]\033[0m Insertando trade SPOT {trade_id} ({fecha_dt.strftime('%Y-%m-%d')})...")
-    return registrar_trade(cursor, uid, t_f, item, "BINANCE")
-
-def procesar_csv_um(cursor, uid, fila):
-    # Cabeceras UM: symbol,id,orderId,side,price,qty,realizedPnl,quoteQty,commission,commissionAsset,time,positionSide...
-    trade_id = fila['id']
-    symbol = fila['symbol']
-    
-    item = verificar_y_obtener_traductor(cursor, uid, trade_id, symbol, 'binance_usd_future')
-    if not item: return False
-
-    fecha_dt = datetime.strptime(fila['time'], '%d-%m-%Y %H:%M:%S')
-    
-    t_f = {
-        'tradeId': str(trade_id),
-        'orderId': str(fila['orderId']),
-        'symbol': symbol,
-        'side': fila['side'], # Aquí ya viene BUY o SELL directo
-        'positionSide': fila.get('positionSide', 'BOTH'),
-        'price': float(fila['price']),
-        'qty': float(fila['qty']),
-        'quoteQty': float(fila['quoteQty']),
-        'commission': float(fila['commission']),
-        'commissionAsset': fila['commissionAsset'],
-        'realizedPnl': float(fila['realizedPnl']),
-        'fecha_sql': fecha_dt.strftime('%Y-%m-%d %H:%M:%S'),
-        'isMaker': fila['maker'] == 'True',
-        'es_futuro': True,
-        'json_raw': json.dumps(fila)
-    }
-    
-    print(f"        \033[92m[NEW]\033[0m Insertando trade UM {trade_id} ({fecha_dt.strftime('%Y-%m-%d')})...")
-    return registrar_trade(cursor, uid, t_f, item, "BINANCE")
-
-def procesar_csv_cm(cursor, uid, fila):
-    # Cabeceras CM: symbol,id,orderId,pair,side,price,qty,realizedPnl,marginAsset,baseQty,commission,commissionAsset,time...
-    trade_id = fila['id']
-    # OJO: En Coin-M el symbol real a veces trae _PERP, usamos el campo pair si symbol falla, pero según tu CSV el symbol es ADAUSD_PERP
-    symbol = fila['symbol'] 
-    
-    item = verificar_y_obtener_traductor(cursor, uid, trade_id, symbol, 'binance_coin_future')
-    if not item: return False
-
-    fecha_dt = datetime.strptime(fila['time'], '%d-%m-%Y %H:%M:%S')
-    
-    t_f = {
-        'tradeId': str(trade_id),
-        'orderId': str(fila['orderId']),
-        'symbol': symbol,
-        'side': fila['side'],
-        'positionSide': fila.get('positionSide', 'BOTH'),
-        'price': float(fila['price']),
-        'qty': float(fila['qty']), # En CM son contratos
-        'quoteQty': float(fila['baseQty']), # El notional real está en baseQty
-        'commission': float(fila['commission']),
-        'commissionAsset': fila['commissionAsset'],
-        'realizedPnl': float(fila['realizedPnl']),
-        'fecha_sql': fecha_dt.strftime('%Y-%m-%d %H:%M:%S'),
-        'isMaker': fila['maker'] == 'True',
-        'es_futuro': True,
-        'json_raw': json.dumps(fila)
-    }
-    
-    print(f"        \033[92m[NEW]\033[0m Insertando trade CM {trade_id} ({fecha_dt.strftime('%Y-%m-%d')})...")
-    return registrar_trade(cursor, uid, t_f, item, "BINANCE")
-
-def procesar_csv_spot(cursor, uid, fila):
-    # Cabeceras SPOT: symbol,id,orderId,orderListId,price,qty,quoteQty,commission,commissionAsset,time,isBuyer...
-    trade_id = fila['id']
-    symbol = fila['symbol']
-    
-    item = verificar_y_obtener_traductor(cursor, uid, trade_id, symbol, 'binance_spot')
-    if not item: return False
-
-    # Convertir 18-10-2021 21:04:19 a YYYY-MM-DD HH:MM:SS
-    fecha_dt = datetime.strptime(fila['time'], '%d-%m-%Y %H:%M:%S')
-    
-    t_f = {
-        'tradeId': str(trade_id),
-        'orderId': str(fila['orderId']),
-        'symbol': symbol,
-        'side': 'BUY' if fila['isBuyer'] == 'True' else 'SELL',
-        'price': float(fila['price']),
-        'qty': float(fila['qty']),
-        'quoteQty': float(fila['quoteQty']),
-        'commission': float(fila['commission']),
-        'commissionAsset': fila['commissionAsset'],
-        'fecha_sql': fecha_dt.strftime('%Y-%m-%d %H:%M:%S'),
-        'isMaker': fila['isMaker'] == 'True',
-        'es_futuro': False,
-        'json_raw': json.dumps(fila) # JSON SINTÉTICO PARA AUDITORÍA
-    }
-    
-    print(f"        \033[92m[NEW]\033[0m Insertando trade SPOT {trade_id} ({fecha_dt.strftime('%Y-%m-%d')})...")
-    return registrar_trade(cursor, uid, t_f, item, "BINANCE")
-
-def procesar_csv_um(cursor, uid, fila):
-    # Cabeceras UM: symbol,id,orderId,side,price,qty,realizedPnl,quoteQty,commission,commissionAsset,time,positionSide...
-    trade_id = fila['id']
-    symbol = fila['symbol']
-    
-    item = verificar_y_obtener_traductor(cursor, uid, trade_id, symbol, 'binance_usd_future')
-    if not item: return False
-
-    fecha_dt = datetime.strptime(fila['time'], '%d-%m-%Y %H:%M:%S')
-    
-    t_f = {
-        'tradeId': str(trade_id),
-        'orderId': str(fila['orderId']),
-        'symbol': symbol,
-        'side': fila['side'], # Aquí ya viene BUY o SELL directo
-        'positionSide': fila.get('positionSide', 'BOTH'),
-        'price': float(fila['price']),
-        'qty': float(fila['qty']),
-        'quoteQty': float(fila['quoteQty']),
-        'commission': float(fila['commission']),
-        'commissionAsset': fila['commissionAsset'],
-        'realizedPnl': float(fila['realizedPnl']),
-        'fecha_sql': fecha_dt.strftime('%Y-%m-%d %H:%M:%S'),
-        'isMaker': fila['maker'] == 'True',
-        'es_futuro': True,
-        'json_raw': json.dumps(fila)
-    }
-    
-    print(f"        \033[92m[NEW]\033[0m Insertando trade UM {trade_id} ({fecha_dt.strftime('%Y-%m-%d')})...")
-    return registrar_trade(cursor, uid, t_f, item, "BINANCE")
-
-def procesar_csv_cm(cursor, uid, fila):
-    # Cabeceras CM: symbol,id,orderId,pair,side,price,qty,realizedPnl,marginAsset,baseQty,commission,commissionAsset,time...
-    trade_id = fila['id']
-    # OJO: En Coin-M el symbol real a veces trae _PERP, usamos el campo pair si symbol falla, pero según tu CSV el symbol es ADAUSD_PERP
-    symbol = fila['symbol'] 
-    
-    item = verificar_y_obtener_traductor(cursor, uid, trade_id, symbol, 'binance_coin_future')
-    if not item: return False
-
-    fecha_dt = datetime.strptime(fila['time'], '%d-%m-%Y %H:%M:%S')
-    
-    t_f = {
-        'tradeId': str(trade_id),
-        'orderId': str(fila['orderId']),
-        'symbol': symbol,
-        'side': fila['side'],
-        'positionSide': fila.get('positionSide', 'BOTH'),
-        'price': float(fila['price']),
-        'qty': float(fila['qty']), # En CM son contratos
-        'quoteQty': float(fila['baseQty']), # El notional real está en baseQty
-        'commission': float(fila['commission']),
-        'commissionAsset': fila['commissionAsset'],
-        'realizedPnl': float(fila['realizedPnl']),
-        'fecha_sql': fecha_dt.strftime('%Y-%m-%d %H:%M:%S'),
-        'isMaker': fila['maker'] == 'True',
-        'es_futuro': True,
-        'json_raw': json.dumps(fila)
-    }
-    
-    print(f"        \033[92m[NEW]\033[0m Insertando trade CM {trade_id} ({fecha_dt.strftime('%Y-%m-%d')})...")
-    return registrar_trade(cursor, uid, t_f, item, "BINANCE")
-
-def ingestor_hibrido_csv(db, uid):
-    # Solo procesar para el usuario 6 como solicitaste
-    if uid != 6: return
-
-    print(f"\n    {'='*50}")
-    print(f"    📂 INICIANDO INGESTA HISTÓRICA CSV (USER {uid})")
-    print(f"    {'='*50}")
-    
-    db = check_db_connection(db)
-    cursor = db.cursor(dictionary=True)
-    directorio_actual = os.path.dirname(os.path.abspath(__file__))
-    
-    # Buscar todos los CSVs en la carpeta
-    archivos_csv = [f for f in os.listdir(directorio_actual) if f.endswith('.csv')]
-    
-    for archivo in archivos_csv:
-        ruta_completa = os.path.join(directorio_actual, archivo)
-        print(f"    [*] Analizando archivo: {archivo}")
-        
-        try:
-            with open(ruta_completa, mode='r', encoding='utf-8-sig') as f:
-                reader = csv.DictReader(f)
-                cabeceras = reader.fieldnames
-                
-                # DETECCIÓN AUTOMÁTICA DEL TIPO DE CSV
-                if 'isBuyer' in cabeceras:
-                    tipo_csv = "SPOT"
-                    procesador = procesar_csv_spot
-                elif 'marginAsset' in cabeceras:
-                    tipo_csv = "COIN-M (CM)"
-                    procesador = procesar_csv_cm
-                elif 'realizedPnl' in cabeceras:
-                    tipo_csv = "USD-M (UM)"
-                    procesador = procesar_csv_um
-                else:
-                    print(f"      [!] Formato desconocido. Saltando {archivo}")
-                    continue
-                
-                print(f"      -> Detectado formato: {tipo_csv}")
-                insertados = 0
-                
-                for fila in reader:
-                    if not fila.get('id'): continue # Evitar líneas en blanco
-                    
-                    if procesador(cursor, uid, fila):
-                        insertados += 1
-                
-                db.commit()
-                print(f"      ✅ Archivo procesado. {insertados} nuevos trades guardados.")
-                
-        except Exception as e:
-            print(f"      ❌ Error leyendo {archivo}: {e}")
-
-    # ==========================================================
-    # RUTINA DE LIMPIEZA POST-CARGA (Detección de Duplicados)
-    # ==========================================================
-    print(f"\n    🧹 Ejecutando limpieza de duplicados post-carga...")
-    sql_clean = """
-        DELETE t1 FROM sys_detalle_trades t1
-        INNER JOIN sys_detalle_trades t2 
-        WHERE 
-            t1.id > t2.id AND 
-            t1.trade_id_externo = t2.trade_id_externo AND 
-            t1.user_id = t2.user_id AND 
-            t1.user_id = %s AND
-            t1.broker = 'BINANCE';
-    """
-    try:
-        cursor.execute(sql_clean, (uid,))
-        db.commit()
-        if cursor.rowcount > 0:
-            print(f"    ✨ Limpieza exitosa: Se eliminaron {cursor.rowcount} duplicados redundantes.")
-        else:
-            print(f"    ✨ Base de datos impecable. Cero duplicados encontrados.")
-    except Exception as e:
-        print(f"    ⚠️ Error en limpieza: {e}")
-        
-    cursor.close()        
 # ==========================================================
 # 🚀 LÓGICA DE UN SOLO CICLO (CON LOCK )
 # Version 6.6.6.26
@@ -1289,17 +1002,6 @@ def ejecutar_ciclo_completo():
             return
 
         cursor.execute("SELECT user_id, api_key, api_secret, broker_name FROM api_keys WHERE status=1")
-
-        if u['binance_api_key'] and u['binance_api_secret']:
-                print(f">> TRABAJANDO: User {uid} | Binance")
-                
-                # 1. CARGA HISTÓRICA POR CSV (Solo insertará lo que falte)
-                ingestor_hibrido_csv(db, uid)
-                
-                # 2. CONTINÚA LA API NORMAL (Hibridación)
-                procesar_binance(db, uid, u['binance_api_key'], u['binance_api_secret'])
-                # procesar_binance_um...
-                # procesar_binance_cm...
 
         for u in cursor.fetchall():
             db = check_db_connection(db)
