@@ -919,7 +919,7 @@ def procesar_binance_cm_futures(db, uid, k, s):
                     break # Salto al siguiente símbolo si falla la API
                 
                 current_start = current_end
-                if current_start < ahora_ms: time.sleep(0.1) # Respeto al Rate Limit
+                if current_start < ahora_ms: time.sleep(0.3) # Respeto al Rate Limit
 
         actualizar_punto_sincro(cursor, uid, "BINANCE", "trades_cm_futures", ahora_ms)
         print(f"    [CM] Trades Futures procesados: {t_count}") 
@@ -997,7 +997,7 @@ def procesar_binance_cm_positions(db, uid, k, s):
 # Version 6.6.6.26
 # ==========================================================
 def ejecutar_ciclo_completo():
-    print(f"💎 MOTOR v6.6.6.38 - SALDOS + TRADES + OPEN ORDERS + POSITION BINANCE-BINGX INSERT HOMOGENEOS")
+    print(f"💎 MOTOR v6.6.6.39 - SALDOS + TRADES + OPEN ORDERS + POSITION BINANCE-BINGX INSERT HOMOGENEOS")
     print(f"\n{'='*65}\n🔄 INICIO CICLO: {datetime.now().strftime('%H:%M:%S')}\n{'='*65}")
 
     db = None
