@@ -7,6 +7,7 @@ from hashlib import sha256
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 from datetime import datetime
+import csv
 import config
 import sys
 import socket
@@ -14,21 +15,23 @@ import json
 
 def verificar_y_obtener_traductor(cursor, uid, trade_id, symbol, motor_fuente):
     """
-    Verifica si el trade ya existe. Si no, busca el traductor.
-    Retorna el 'item' del traductor o None si debemos saltarlo.
+    Verifica si el trade ya existe usando id_detalle. Si no, busca el traductor.
     """
-    # 1. Validación de Existencia (Regla de Oro 2)
-    cursor.execute("SELECT id FROM detalle_trades WHERE trade_id_externo=%s AND user_id=%s AND broker='BINANCE'", (str(trade_id), uid))
+    # 1. Validación de Existencia (Cambiamos 'id' por 'id_detalle')
+    sql_check = "SELECT id_detalle FROM detalle_trades WHERE trade_id_externo=%s AND user_id=%s AND broker='BINANCE'"
+    cursor.execute(sql_check, (str(trade_id), uid))
+    
     if cursor.fetchone():
         print(f"        \033[93m[SKIP]\033[0m Trade {trade_id} ya existe en DB. Saltando...")
         return None
 
-    # 2. Obtener el Traductor ID
+    # 2. Obtener el Traductor ID (Esta parte suele estar bien si ticker_motor existe)
     cursor.execute("SELECT * FROM sys_traductor_simbolos WHERE ticker_motor=%s AND motor_fuente=%s", (symbol, motor_fuente))
     item = cursor.fetchone()
     if not item:
-        print(f"        \033[91m[!] Símbolo {symbol} no encontrado en {motor_fuente}\033[0m")
-    
+        print(f"        \033[91m[ERROR]\033[0m No hay traductor para {symbol} ({motor_fuente}).")
+        return None
+        
     return item
 
 def obtener_lock(cursor, lock_name, timeout=600):
@@ -1155,7 +1158,7 @@ def procesar_csv_um(cursor, uid, fila):
     trade_id = fila['id']
     symbol = fila['symbol']
     
-    item = verificar_y_obtener_traductor(cursor, uid, trade_id, symbol, 'binance_usd_future')
+    item = verificar_y_obtener_traductor(cursor, uid, trade_id, symbol, 'binance_usdt_future')
     if not item: return False
 
     fecha_dt = datetime.strptime(fila['time'], '%d-%m-%Y %H:%M:%S')
@@ -1274,7 +1277,7 @@ def ingestor_hibrido_csv(db, uid):
         DELETE t1 FROM detalle_trades t1
         INNER JOIN detalle_trades t2 
         WHERE 
-            t1.id > t2.id AND 
+            t1.id_detalle > t2.id_detalle AND 
             t1.trade_id_externo = t2.trade_id_externo AND 
             t1.user_id = t2.user_id AND 
             t1.user_id = %s AND
