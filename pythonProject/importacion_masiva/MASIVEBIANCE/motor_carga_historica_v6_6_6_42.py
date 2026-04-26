@@ -1270,30 +1270,38 @@ def ingestor_hibrido_csv(db, uid):
             print(f"      ❌ Error leyendo {archivo}: {e}")
 
     # ==========================================================
-    # RUTINA DE LIMPIEZA POST-CARGA (Detección de Duplicados)
+    # 🧹 RUTINA DE LIMPIEZA POST-CARGA (Detección de Duplicados)
+    # Versión 1.1
     # ==========================================================
     print(f"\n    🧹 Ejecutando limpieza de duplicados post-carga...")
+
     sql_clean = """
         DELETE t1 FROM detalle_trades t1
         INNER JOIN detalle_trades t2 
+            ON t1.trade_id_externo = t2.trade_id_externo
+            AND t1.user_id = t2.user_id
+            AND t1.broker = t2.broker
+            AND t1.categoria_producto = t2.categoria_producto
         WHERE 
-            t1.id_detalle > t2.id_detalle AND 
-            t1.trade_id_externo = t2.trade_id_externo AND 
-            t1.user_id = t2.user_id AND 
-            t1.user_id = %s AND
-            t1.broker = 'BINANCE';
+            t1.id_detalle > t2.id_detalle
+            AND t1.user_id = %s
+            AND t1.broker = 'BINANCE';
     """
+
     try:
         cursor.execute(sql_clean, (uid,))
         db.commit()
+
         if cursor.rowcount > 0:
             print(f"    ✨ Limpieza exitosa: Se eliminaron {cursor.rowcount} duplicados redundantes.")
         else:
             print(f"    ✨ Base de datos impecable. Cero duplicados encontrados.")
+
     except Exception as e:
         print(f"    ⚠️ Error en limpieza: {e}")
-        
-    cursor.close()        
+
+    cursor.close()
+       
 # ==========================================================
 # 🚀 LÓGICA DE UN SOLO CICLO (CON LOCK )
 # Version 6.6.6.42 - CORREGIDA
