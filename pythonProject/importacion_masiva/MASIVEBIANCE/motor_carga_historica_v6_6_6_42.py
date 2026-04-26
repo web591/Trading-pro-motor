@@ -205,19 +205,19 @@ def obtener_precio_usd(cursor, tid, asset_name):
         print(f"[Precio Error {asset_name}]: {e}")
     return 0.0
 
+
 # ==========================================================
 # FINANCIAL TRADING MODULE - NORMALIZADOR DE COMISIONES
-# Version: 1.0 (Opción A - Sweeper Continuo)
+# Version: 1.1 (Optimización Interna - SIN Yahoo Finance)
 # ==========================================================
 def normalizar_comisiones_pendientes(db, user_id):
-    """
-    Busca trades con comisión en 0 USD y los repara con un límite de seguridad.
-    """
     db = check_db_connection(db)
     cursor = db.cursor(dictionary=True)
     try:
+        # Añadimos symbol y precio_ejecucion para comparar internamente
         sql_pendientes = """
-            SELECT id_detalle, commission, commission_asset, quote_qty 
+            SELECT id_detalle, commission, commission_asset, quote_qty, 
+                   symbol, precio_ejecucion 
             FROM detalle_trades 
             WHERE user_id = %s 
               AND commission > 0 
@@ -232,16 +232,24 @@ def normalizar_comisiones_pendientes(db, user_id):
         stables = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'DAI', 'PYUSD']
 
         for trade in trades:
-            # 1. 🧹 LIMPIEZA: Quitamos comillas o espacios que puedan venir del exchange
             asset_raw = trade['commission_asset']
             if not asset_raw: continue
             asset = asset_raw.strip().replace('"', '').upper()
 
             precio_actual = 0.0
 
-            # 2. LÓGICA DE PRECIO
+            # --- LÓGICA DE PRECIO 100% INTERNA ---
+            
+            # 1. Si es Stable
             if asset in stables:
                 precio_actual = 1.0
+            
+            # 2. NUEVO: Si la comisión es el mismo asset que el trade (Ej: ADA en ADAUSDT)
+            # Usamos el precio de ejecución que ya tenemos grabado
+            elif asset in trade['symbol'] and float(trade['precio_ejecucion']) > 0:
+                precio_actual = float(trade['precio_ejecucion'])
+            
+            # 3. Si es un asset externo (Ej: BNB), buscamos en el traductor como antes
             else:
                 sql_tid = """
                     SELECT id FROM sys_traductor_simbolos 
@@ -252,37 +260,30 @@ def normalizar_comisiones_pendientes(db, user_id):
                 res_tid = cursor.fetchone()
 
                 if res_tid:
-                    # Aquí es donde obtenemos el precio (BNB, BTC, etc)
                     precio_actual = obtener_precio_usd(cursor, res_tid['id'], asset)
 
-            # 3. 🛡️ CÁLCULO CON ESCUDO DE SEGURIDAD
+            # 3. 🛡️ CÁLCULO CON ESCUDO DE SEGURIDAD (Igual que antes)
             if precio_actual and precio_actual > 0:
                 com_nominal = float(trade['commission'])
                 com_usd = com_nominal * float(precio_actual)
-                
-                # --- EL BLOQUE DE SEGURIDAD ---
-                # Si la comisión calculada es mayor a $15 USD O es igual al monto del trade (error espejo), 
-                # la bloqueamos para no ensuciar el dashboard.
                 monto_trade = float(trade['quote_qty'])
                 
                 es_error_espejo = abs(com_nominal - monto_trade) < 0.00001
-                es_valor_absurdo = com_usd > 15.0 # Ajusta este valor si haces trades institucionales muy grandes
+                es_valor_absurdo = com_usd > 15.0 
 
                 if es_error_espejo or es_valor_absurdo:
-                    print(f"⚠️ BLOQUEO: ID {trade['id_detalle']} - Com: {com_nominal} {asset} calculaba ${com_usd:.2f}")
-                    # Lo marcamos con un valor mínimo o 0 para que no vuelva a entrar al ciclo
                     cursor.execute("UPDATE detalle_trades SET commission_usd = 0.00000001 WHERE id_detalle = %s", (trade['id_detalle'],))
                 else:
-                    # 4. ACTUALIZACIÓN NORMAL
                     sql_update = "UPDATE detalle_trades SET commission_usd = %s, commission_asset = %s WHERE id_detalle = %s"
                     cursor.execute(sql_update, (com_usd, asset, trade['id_detalle']))
-                    print(f"    [+] Comisión Normalizada: {asset} -> ${com_usd:.4f} USD")
+                    print(f"    [+] Comisión Normalizada (Interna): {asset} -> ${com_usd:.4f} USD")
 
         db.commit()
     except Exception as e:
         print(f"    [!] Error en Sweeper de Comisiones: {e}")
     finally:
         cursor.close()
+
 # ==========================================================
 
 def registrar_saldo(cursor, uid, info_traductor, total, locked, asset, broker, tipo_cuenta):
@@ -309,7 +310,7 @@ def generar_tarea_incorporacion(cursor, user_id, broker, ticker, contexto):
         """
         cursor.execute(sql, (user_id, broker, ticker, contexto))
     except Exception as e:
-        print(f"    [ERROR TAREAS] No se pudo crear tarea: {e}")
+        print(f"    [ERROR TAREAS] No se pudo crear tarea: {e}")        
 
 # ==========================================================
 # 🕒 GESTIÓN DE TIEMPO
