@@ -540,7 +540,7 @@ def binance_dust_log(db, uid, key, secret):
                         "user_id": uid, "broker": "BINANCE", "tipo_evento": "DUST_IN",
                         "asset": asset_e, "cantidad": float(entry["totalTransferedAmount"]), 
                         "ticker_motor": None, "fecha": fecha, 
-                        "id_externo": f"{uid}BN-DUST-{ts}-IN", 
+                        "id_externo": f"{uid}-BN-DUST-{ts}-IN", 
                         "raw": json.dumps(entry)
                     })
                     count_bloque += 1
