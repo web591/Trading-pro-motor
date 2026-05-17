@@ -326,7 +326,7 @@ def binance_deposits(db, user_id, key, secret):
     endpoint = "BINANCE_DEPOSIT"
     last_sync = obtener_sync(cursor, user_id, "BINANCE", endpoint)
 
-    start_ts = last_sync + 1 if last_sync > 0 else 1501545600000
+    start_ts = last_sync + 1 if last_sync > 0 else 1601510400000
     end_now = int(time.time() * 1000)
 
     print(f"    [+] {endpoint}: Reconstruyendo histórico...")
@@ -408,7 +408,7 @@ def binance_withdraw(db, user_id, key, secret):
 
     last_sync = obtener_sync(cursor, user_id, "BINANCE", endpoint)
 
-    start_ts = last_sync + 1 if last_sync > 0 else 1501545600000
+    start_ts = last_sync + 1 if last_sync > 0 else 1601510400000
     end_now = int(time.time() * 1000)
 
     print(f"    [+] {endpoint}: Reconstruyendo histórico...")
@@ -566,7 +566,7 @@ def binance_convert_history(db, uid, key, secret):
     endpoint = "BINANCE_CONVERT"
     last_sync = obtener_sync(cursor, uid, "BINANCE", endpoint)
     
-    start_ts = last_sync + 1 if last_sync > 0 else 1633046400000
+    start_ts = last_sync + 1 if last_sync > 0 else 1601510400000
     end_now = int(time.time() * 1000)
     
     print(f"    [+] {endpoint}: Iniciando escaneo histórico por bloques...")
@@ -815,7 +815,7 @@ def bingx_deposits(db, user_id, key, secret):
 
     last_sync = obtener_sync(cursor, user_id, "BINGX", endpoint)
 
-    start_ts = last_sync + 1 if last_sync > 0 else 1609459200000  # 2021-01-01
+    start_ts = last_sync + 1 if last_sync > 0 else 1601510400000  # 2021-01-01
     end_now = int(time.time() * 1000)
 
     print(f"    [+] {endpoint}: Reconstruyendo histórico...")
@@ -922,7 +922,7 @@ def bingx_withdraw(db, user_id, key, secret):
 
     last_sync = obtener_sync(cursor, user_id, "BINGX", endpoint)
 
-    start_ts = last_sync + 1 if last_sync > 0 else 1609459200000  # 2021-01-01
+    start_ts = last_sync + 1 if last_sync > 0 else 1601510400000 # 2021-01-01
     end_now = int(time.time() * 1000)
 
     print(f"    [+] {endpoint}: Reconstruyendo histórico...")
