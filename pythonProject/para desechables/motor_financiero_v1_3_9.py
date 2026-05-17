@@ -217,19 +217,26 @@ def registrar_cashflow(cursor, data):
 def binance_sign(secret, query):
     return hmac.new(secret.encode(), query.encode(), hashlib.sha256).hexdigest()
 
+# ==========================================================
+# 📋 BLOQUE: BINANCE DIVIDENDS (v1.3.9 - Paginación Completa Histórica)
+# ==========================================================
 def binance_dividends(db, user_id, key, secret):
     cursor = db.cursor(dictionary=True)
     endpoint = "BINANCE_DIVIDEND"
     last_sync = obtener_sync(cursor, user_id, "BINANCE", endpoint)
-    start_ts = last_sync + 1 if last_sync > 0 else int((time.time() - 90*24*3600)*1000)
+    
+    # ✅ Si es primera ejecución tras purga, arranca desde el 01 de Enero de 2022
+    start_ts = last_sync + 1 if last_sync > 0 else 1640995200000
     end_now = int(time.time()*1000)
+    
     print(f"    [+] {endpoint}: Escaneo por bloques desde {time.strftime('%Y-%m-%d', time.gmtime(start_ts/1000))}...")
 
     count_total = 0
     max_ts_global = last_sync
 
     while start_ts < end_now:
-        chunk_end = start_ts + (7 * 24 * 60 * 60 * 1000)  # bloques de 7 días
+        # ✅ Paginación en bloques optimizados de 90 días (Límite máximo permitido por Binance para este endpoint)
+        chunk_end = start_ts + (90 * 24 * 60 * 60 * 1000)
         if chunk_end > end_now:
             chunk_end = end_now
 
@@ -266,6 +273,7 @@ def binance_dividends(db, user_id, key, secret):
                     if ts > max_ts_global:
                         max_ts_global = ts
                     count_total += 1
+            
             start_ts = chunk_end + 1
             rate_limit()
         except Exception as e:
@@ -288,26 +296,85 @@ def binance_dividends(db, user_id, key, secret):
 # ==========================================================
 # 🔌 BINANCE INCOME (FUTURES CASHFLOW)
 # ==========================================================
+
 def binance_income(db, user_id, key, secret):
-
     cursor = db.cursor(dictionary=True)
-
     endpoint = "BINANCE_INCOME"
+    last_sync = obtener_sync(cursor, user_id, "BINANCE", endpoint)
+    
+    # ✅ Modificado: Si no hay historial previo, retrocede de forma segura hasta el inicio contable del año 2022
+    start_ts = last_sync + 1 if last_sync > 0 else 1640995200000
+    end_now = int(time.time()*1000)
+    
+    print(f"    [+] {endpoint}: Reconstruyendo histórico Futures desde {time.strftime('%Y-%m-%d', time.gmtime(start_ts/1000))}...")
 
-    last_sync = obtener_sync(
-        cursor,
-        user_id,
-        "BINANCE",
-        endpoint
-    )
+    count_total = 0
+    max_ts_global = last_sync
 
-    # OCTUBRE 2022
-    start_ts = (
-        last_sync + 1
-        if last_sync > 0
-        else 1664582400000
-    )
+    while start_ts < end_now:
+        # La API de futuros de Binance exige de forma estricta bloques de máximo 7 días por llamada
+        chunk_end = start_ts + (7 * 24 * 60 * 60 * 1000)
+        if chunk_end > end_now:
+            chunk_end = end_now
 
+        params = {
+            "startTime": start_ts,
+            "endTime": chunk_end,
+            "limit": 1000,
+            "timestamp": int(time.time()*1000)
+        }
+
+        query = urlencode(params)
+        signature = hmac.new(secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+        url = f"https://fapi.binance.com/fapi/v1/income?{query}&signature={signature}"
+
+        try:
+            r = requests.get(url, headers={"X-MBX-APIKEY": key}).json()
+            if isinstance(r, list) and r:
+                for d in r:
+                    ts = int(d["time"])
+                    if ts <= last_sync:
+                        continue
+                    
+                    tran_id = d.get("tranId")
+                    tipo_evento = d.get("incomeType", "UNKNOWN")
+                    
+                    registrar_cashflow(cursor, {
+                        "user_id": user_id,
+                        "broker": "BINANCE",
+                        "tipo_evento": tipo_evento,
+                        "asset": d["asset"],
+                        "cantidad": float(d["income"]),
+                        "ticker_motor": d.get("info", ""),
+                        "fecha": time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts/1000)),
+                        "id_externo": f"{user_id}-BN-INC-{tran_id}",
+                        "raw": json.dumps(d)
+                    })
+                    if ts > max_ts_global:
+                        max_ts_global = ts
+                    count_total += 1
+            
+            start_ts = chunk_end + 1
+            rate_limit()
+        except Exception as e:
+            print(f"    [!] Error en bloque income: {e}")
+            break
+
+    nuevo_sync = max(max_ts_global, chunk_end)
+    guardar_sync(cursor, user_id, "BINANCE", endpoint, nuevo_sync)
+    print(f"    [OK] {endpoint}: {count_total} registros históricos procesados.")
+
+# ==========================================================
+# 📊 BLOQUE: BINANCE INCOME - FUTURES (v1.3.9 - Normalizado y Paginado)
+# ==========================================================
+def binance_income(db, user_id, key, secret):
+    cursor = db.cursor(dictionary=True)
+    endpoint = "BINANCE_INCOME"
+    
+    last_sync = obtener_sync(cursor, user_id, "BINANCE", endpoint)
+
+    # ✅ Punto de partida contable unificado: 01 de Enero de 2022 si la tabla de control se purga
+    start_ts = last_sync + 1 if last_sync > 0 else 1640995200000
     end_now = int(time.time() * 1000)
 
     print(f"    [+] {endpoint}: Reconstruyendo histórico Futures...")
@@ -316,22 +383,13 @@ def binance_income(db, user_id, key, secret):
     max_ts_global = last_sync
 
     while start_ts < end_now:
-
-        # bloques 30 días
-        chunk_end = start_ts + (30 * 24 * 60 * 60 * 1000)
-
+        # ✅ Corrección Crítica: Bloques estrictos de 7 días exigidos por la API de Binance Futuros
+        chunk_end = start_ts + (7 * 24 * 60 * 60 * 1000)
         if chunk_end > end_now:
             chunk_end = end_now
 
-        fecha_h = time.strftime(
-            '%Y-%m-%d',
-            time.gmtime(start_ts / 1000)
-        )
-
-        print(
-            f"        [..] Income: Escaneando desde {fecha_h}...",
-            end="\r"
-        )
+        fecha_h = time.strftime('%Y-%m-%d', time.gmtime(start_ts / 1000))
+        print(f"        [..] Income: Escaneando desde {fecha_h}...", end="\r")
 
         params = {
             "startTime": start_ts,
@@ -341,48 +399,32 @@ def binance_income(db, user_id, key, secret):
         }
 
         query = urlencode(params)
-
-        url = (
-            f"https://fapi.binance.com/fapi/v1/income?"
-            f"{query}&signature={binance_sign(secret, query)}"
-        )
+        # ✅ Adaptación de firma nativa del proyecto para evitar dependencias rotas
+        signature = hmac.new(secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+        url = f"https://fapi.binance.com/fapi/v1/income?{query}&signature={signature}"
 
         try:
+            r = requests.get(url, headers={"X-MBX-APIKEY": key}, timeout=90).json()
 
-            r = requests.get(
-                url,
-                headers={"X-MBX-APIKEY": key},
-                timeout=90
-            ).json()
-
-            if isinstance(r, list):
-
+            if isinstance(r, list) and r:
                 for i in r:
-
                     ts = int(i["time"])
-
+                    if ts <= last_sync:
+                        continue
 
                     income_type = i["incomeType"]
 
                     # ==========================================================
-                    # NORMALIZACIÓN FINANCIERA (MISMA LÓGICA BINGX)
+                    # 🛡️ TU LOGICA DE NORMALIZACIÓN FINANCIERA PRESERVADA
                     # ==========================================================
-
                     if income_type == "REALIZED_PNL":
                         categoria = "TRADE"
-
                     elif income_type in ["COMMISSION", "TRADING_FEE"]:
                         categoria = "FEE"
-
                     elif income_type == "FUNDING_FEE":
                         categoria = "FUNDING"
-
-                    elif income_type in [
-                        "TRANSFER",
-                        "INTERNAL_TRANSFER"
-                    ]:
+                    elif income_type in ["TRANSFER", "INTERNAL_TRANSFER"]:
                         categoria = "TRANSFER"
-
                     else:
                         categoria = "OTHER"
 
@@ -393,48 +435,28 @@ def binance_income(db, user_id, key, secret):
                         "asset": i["asset"],
                         "cantidad": float(i["income"]),
                         "ticker_motor": i.get("symbol"),
-                        "fecha": time.strftime(
-                            '%Y-%m-%d %H:%M:%S',
-                            time.gmtime(ts / 1000)
-                        ),
-                        "id_externo": (
-                            f"{user_id}-BN-INC-"
-                            f"{i['tranId']}"
-                        ),
+                        "fecha": time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts / 1000)),
+                        "id_externo": f"{user_id}-BN-INC-{i['tranId']}",
                         "raw": json.dumps(i)
                     })
 
                     count += 1
-
                     if ts > max_ts_global:
                         max_ts_global = ts
 
             start_ts = chunk_end + 1
-
+            
+            # Guardado parcial y rate limit para proteger la estabilidad en escaneos profundos
             nuevo_sync = max(max_ts_global, chunk_end)
-
-            guardar_sync(
-                cursor,
-                user_id,
-                "BINANCE",
-                endpoint,
-                nuevo_sync
-            )
-
+            guardar_sync(cursor, user_id, "BINANCE", endpoint, nuevo_sync)
             db.commit()
-
             rate_limit()
 
         except Exception as e:
-
             print(f"\n    [!] Error en bloque Binance Income: {e}")
-
             break
 
-    print(
-        f"\n    [OK] {endpoint}: "
-        f"{count} registros históricos procesados."
-    )
+    print(f"\n    [OK] {endpoint}: {count} registros históricos procesados.")
 
 # ==========================================================
 # SECCIÓN MODIFICADA: DEPÓSITOS Y RETIROS (FILTRO BINANCE PAY)
@@ -815,75 +837,113 @@ def binance_transfers(db, user_id, key, secret):
 
     print(f"    [OK] {endpoint}: Finalizado.")
 
+
+# ==========================================================
+# ⛏️ BLOQUE: BINANCE MINING (v1.3.10 - Cuentas Cruzadas & Paginación 90 Días)
+# ==========================================================
 def binance_mining(db, user_id, key, secret):
     cursor = db.cursor(dictionary=True)
     endpoint = "BINANCE_MINING"
     
+    # 📝 PRESERVACIÓN DE TU CONFIGURACIÓN ORIGINAL DE CUENTAS
     mining_accounts = ["EppETHJafa", "EthJafa01"]
     algoritmos = ["etchash", "ethash"] 
     
     last_sync = obtener_sync(cursor, user_id, "BINANCE", endpoint)
     
-    if last_sync == 0:
-        actual_start = int((time.time() - 90*24*3600)*1000)
-        print(f"    [+] {endpoint}: Escaneo histórico (Límite API 90 días)...")
-    else:
-        actual_start = last_sync + 1
-        print(f"    [+] {endpoint}: Verificando nuevos desde {time.strftime('%Y-%m-%d', time.gmtime(actual_start/1000))}...")
+    # ✅ Si se purga la DB, arranca desde el 01 de Enero de 2022
+    start_ts_base = last_sync + 1 if last_sync > 0 else 1640995200000
+    end_now = int(time.time() * 1000)
+    
+    print(f"    [+] {endpoint}: Verificando nuevos desde {time.strftime('%Y-%m-%d', time.gmtime(start_ts_base/1000))}...")
     
     max_ts_global = last_sync
-    count = 0
+    count_total = 0
 
+    # 🔄 MATRIZ CRUZADA DE EXTRACCIÓN CONTABLE
     for account in mining_accounts:
         for algo in algoritmos:
-            params = {
-                "algo": algo, 
-                "userName": account,
-                "timestamp": int(time.time()*1000)
-            }
+            # Inicializamos el cursor temporal por cada combinación de cuenta/algo
+            start_ts = start_ts_base
             
-            query = urlencode(params)
-            signature = binance_sign(secret, query)
-            url = f"https://api.binance.com/sapi/v1/mining/payment/list?{query}&signature={signature}"
-            
-            try:
-                r = requests.get(url, headers={"X-MBX-APIKEY": key}).json()
+            while start_ts < end_now:
+                # ✅ Bloques de 90 días para respetar el límite estricto de la API de Binance Pool (< 120 días)
+                chunk_end = start_ts + (90 * 24 * 60 * 60 * 1000)
+                if chunk_end > end_now:
+                    chunk_end = end_now
+
+                params = {
+                    "algo": algo, 
+                    "userName": account,
+                    "startTime": start_ts,
+                    "endTime": chunk_end,
+                    "timestamp": int(time.time() * 1000)
+                }
                 
-                if r.get("code") == 0 and "data" in r and "accountProfits" in r["data"]:
-                    for p in r["data"]["accountProfits"]:
-                        ts = int(p["time"])
-                        
-                        if ts <= last_sync: continue
-                        
-                        cantidad = p.get("profitAmount", p.get("dayProfit", p.get("amount", 0.0)))
-                        
-                        registrar_cashflow(cursor, {
-                            "user_id": user_id,
-                            "broker": "BINANCE",
-                            "tipo_evento": "MINING_PAYMENT",
-                            "asset": p["coinName"],
-                            "cantidad": float(cantidad),
-                            "ticker_motor": f"POOL-{account}-{algo}",
-                            "fecha": time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts/1000)),
-                            "id_externo": f"{user_id}-BN-MINE-{account}-{ts}-{p['coinName']}",
-                            "raw": json.dumps(p)
-                        })
-                        
-                        if ts > max_ts_global: max_ts_global = ts
-                        count += 1
+                query = urlencode(params)
+                signature = hmac.new(secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+                url = f"https://api.binance.com/sapi/v1/mining/payment/list?{query}&signature={signature}"
 
 
-                time.sleep(0.2)
-            except Exception as e:
-                print(f"    [!] Error minando {account} ({algo}): {e}")
+                try:
+                    r = requests.get(url, headers={"X-MBX-APIKEY": key}).json()
+                    
+                    if "data" in r and "accountProfits" in r["data"]:
+                        profits = r["data"]["accountProfits"]
+                        
+                        # 🛡️ CONTROL DE PROTECCIÓN: Si el bloque está vacío o Binance nos devuelve 
+                        # datos fuera de rango por defecto, rompemos el bucle de esta cuenta.
+                        if not profits:
+                            start_ts = chunk_end + 1
+                            continue
+                            
+                        # Si el primer registro devuelto es más viejo que el inicio del bloque original,
+                        # o si ya alcanzamos el último cursor real, evitamos el bucle infinito defensivo.
+                        primer_ts = int(profits[0]["time"])
+                        if last_sync > 0 and primer_ts <= last_sync:
+                            # Ya estamos leyendo registros duplicados del pasado que ya tenemos controlados
+                            break
+
+                        for p in profits:
+                            ts = int(p["time"])
+                            
+                            if ts <= last_sync: 
+                                continue
+                            
+                            cantidad = p.get("profitAmount", p.get("dayProfit", p.get("amount", 0.0)))
+                            
+                            registrar_cashflow(cursor, {
+                                "user_id": user_id,
+                                "broker": "BINANCE",
+                                "tipo_evento": "MINING_PAYMENT",
+                                "asset": p["coinName"],
+                                "cantidad": float(cantidad),
+                                "ticker_motor": f"POOL-{account}-{algo}",
+                                "fecha": time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts/1000)),
+                                "id_externo": f"{user_id}-BN-MINE-{account}-{ts}-{p['coinName']}",
+                                "raw": json.dumps(p)
+                            })
+
+                            if ts > max_ts_global: 
+                                max_ts_global = ts
+                            count_total += 1
+
+                except Exception as e:
+                    print(f"    [!] Error minando {account} ({algo}) en bloque {time.strftime('%Y-%m-%d', time.gmtime(start_ts/1000))}: {e}")
+                    break
+                
+                # ✅ GUARDADO INMEDIATO POR BLOQUE PROCESADO (Evita bloqueos en phpMyAdmin)
+                if count_total > 0:
+                    db.commit()
+                
+                start_ts = chunk_end + 1
+                rate_limit(0.2) # Control de tasa para evitar penalizaciones por ráfaga (Rate Limits)
 
     if max_ts_global > last_sync:
         guardar_sync(cursor, user_id, "BINANCE", endpoint, max_ts_global)
         db.commit()
     
-    print(f"    [OK] {endpoint}: {count} nuevos pagos registrados correctamente.")
-
-
+    print(f"    [OK] {endpoint}: {count_total} nuevos pagos registrados correctamente.")
 
 
 # ==========================================================
@@ -1224,6 +1284,8 @@ def bingx_deposits(db, user_id, key, secret):
                 timeout=90
             ).json()
 
+            #print(json.dumps(r)[:1500])
+
             deposit_list = []
 
             if isinstance(r, dict):
@@ -1511,7 +1573,7 @@ def ejecutar_motor_financiero(db):
     db.commit()
 
     print(f"\n{'='*60}")
-    print(f"💎 MOTOR FINANCIERO v1.3.8 - AUDITORÍA Y DIVIDENDOS")
+    print(f"💎 MOTOR FINANCIERO v1.3.9 - AUDITORÍA Y DIVIDENDOS")
     print(f"{'='*60}")
     
     try:

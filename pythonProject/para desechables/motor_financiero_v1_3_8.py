@@ -178,17 +178,19 @@ def registrar_cashflow(cursor, data):
     raw_str = str(data.get("raw", "{}"))
     es_dust = "DUST" in str(data.get("tipo_evento", "")) or "BN-DUST" in str(data.get("id_externo", ""))
 
+    
     if es_dust:
-        # CASO A: El destino fue una Stablecoin (el valor ya es USD)
-        if '"targetAsset": "USDC"' in raw_str or '"targetAsset": "USDT"' in raw_str:
-            precio = 1.0
-            data["asset"] = "USDC" if "USDC" in raw_str else "USDT"
-            
-        # CASO B: El destino fue BNB (mantener el precio de mercado)
-        elif '"targetAsset": "BNB"' in raw_str or data["asset"] == "BNB":
-            # Aquí NO forzamos el precio a 1.0, 
-            # se queda con el 'precio' de mercado obtenido arriba.
-            data["asset"] = "BNB"
+
+        # SOLO para Dust IN hacia stablecoin
+        if data["tipo_evento"] == "DUST_IN":
+
+            if (
+                '"targetAsset": "USDC"' in raw_str or
+                '"targetAsset": "USDT"' in raw_str or
+                '"targetAsset": "FDUSD"' in raw_str or
+                '"targetAsset": "BUSD"' in raw_str
+            ):
+                precio = 1.0            
     # -------------------------------------------------------
 
     valor_usd = float(data["cantidad"]) * precio
@@ -215,19 +217,26 @@ def registrar_cashflow(cursor, data):
 def binance_sign(secret, query):
     return hmac.new(secret.encode(), query.encode(), hashlib.sha256).hexdigest()
 
+# ==========================================================
+# 📋 BLOQUE: BINANCE DIVIDENDS (v1.3.9 - Paginación Completa Histórica)
+# ==========================================================
 def binance_dividends(db, user_id, key, secret):
     cursor = db.cursor(dictionary=True)
     endpoint = "BINANCE_DIVIDEND"
     last_sync = obtener_sync(cursor, user_id, "BINANCE", endpoint)
-    start_ts = last_sync + 1 if last_sync > 0 else int((time.time() - 90*24*3600)*1000)
+    
+    # ✅ Si es primera ejecución tras purga, arranca desde el 01 de Enero de 2022
+    start_ts = last_sync + 1 if last_sync > 0 else 1640995200000
     end_now = int(time.time()*1000)
+    
     print(f"    [+] {endpoint}: Escaneo por bloques desde {time.strftime('%Y-%m-%d', time.gmtime(start_ts/1000))}...")
 
     count_total = 0
     max_ts_global = last_sync
 
     while start_ts < end_now:
-        chunk_end = start_ts + (7 * 24 * 60 * 60 * 1000)  # bloques de 7 días
+        # ✅ Paginación en bloques optimizados de 90 días (Límite máximo permitido por Binance para este endpoint)
+        chunk_end = start_ts + (90 * 24 * 60 * 60 * 1000)
         if chunk_end > end_now:
             chunk_end = end_now
 
@@ -264,58 +273,176 @@ def binance_dividends(db, user_id, key, secret):
                     if ts > max_ts_global:
                         max_ts_global = ts
                     count_total += 1
+            
             start_ts = chunk_end + 1
             rate_limit()
         except Exception as e:
             print(f"    [!] Error en bloque dividendos: {e}")
             break
 
-    if max_ts_global > last_sync:
-        guardar_sync(cursor, user_id, "BINANCE", endpoint, max_ts_global)
+    nuevo_sync = max(max_ts_global, chunk_end)
+
+    guardar_sync(
+        cursor,
+        user_id,
+        "BINANCE",
+        endpoint,
+        nuevo_sync
+    )
+
     print(f"    [OK] {endpoint}: {count_total} procesados.")
 
+
+# ==========================================================
+# 🔌 BINANCE INCOME (FUTURES CASHFLOW)
+# ==========================================================
 def binance_income(db, user_id, key, secret):
+
     cursor = db.cursor(dictionary=True)
+
     endpoint = "BINANCE_INCOME"
-    last_sync = obtener_sync(cursor, user_id, "BINANCE", endpoint)
-    
-    # CORRECCIÓN: Para Futures Income, si es 0, Binance requiere un startTime razonable
-    if last_sync == 0:
-        actual_start = int((time.time() - 90*24*3600)*1000)
-    else:
-        actual_start = last_sync + 1
 
-    print(f"    [+] {endpoint}: Sincronizando desde TS {actual_start}...")
-    
-    base = "https://fapi.binance.com/fapi/v1/income"
+    last_sync = obtener_sync(
+        cursor,
+        user_id,
+        "BINANCE",
+        endpoint
+    )
+
+    # OCTUBRE 2022
+    start_ts = (
+        last_sync + 1
+        if last_sync > 0
+        else 1664582400000
+    )
+
+    end_now = int(time.time() * 1000)
+
+    print(f"    [+] {endpoint}: Reconstruyendo histórico Futures...")
+
     count = 0
-    while True:
-        params = {"startTime": actual_start, "limit": 1000, "timestamp": int(time.time()*1000)}
+    max_ts_global = last_sync
+
+    while start_ts < end_now:
+
+        # bloques 30 días
+        chunk_end = start_ts + (30 * 24 * 60 * 60 * 1000)
+
+        if chunk_end > end_now:
+            chunk_end = end_now
+
+        fecha_h = time.strftime(
+            '%Y-%m-%d',
+            time.gmtime(start_ts / 1000)
+        )
+
+        print(
+            f"        [..] Income: Escaneando desde {fecha_h}...",
+            end="\r"
+        )
+
+        params = {
+            "startTime": start_ts,
+            "endTime": chunk_end,
+            "limit": 1000,
+            "timestamp": int(time.time() * 1000)
+        }
+
         query = urlencode(params)
-        url = f"{base}?{query}&signature={binance_sign(secret, query)}"
-        r = requests.get(url, headers={"X-MBX-APIKEY": key}).json()
 
-        if not r or not isinstance(r, list): break 
+        url = (
+            f"https://fapi.binance.com/fapi/v1/income?"
+            f"{query}&signature={binance_sign(secret, query)}"
+        )
 
-        max_time = actual_start
-        for i in r:
-            ts = int(i["time"])
-            registrar_cashflow(cursor, {
-                "user_id": user_id, "broker": "BINANCE", "tipo_evento": i["incomeType"],
-                "asset": i["asset"], "cantidad": float(i["income"]), "ticker_motor": i.get("symbol"),
-                "fecha": time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts/1000)),
-                "id_externo": f"{user_id}-BN-INC-{i['tranId']}", "raw": json.dumps(i)
-            })
-            if ts > max_time: max_time = ts
-            count += 1
+        try:
+
+            r = requests.get(
+                url,
+                headers={"X-MBX-APIKEY": key},
+                timeout=90
+            ).json()
+
+            if isinstance(r, list):
+
+                for i in r:
+
+                    ts = int(i["time"])
 
 
+                    income_type = i["incomeType"]
 
-        guardar_sync(cursor, user_id, "BINANCE", endpoint, max_time)
-        actual_start = max_time + 1
-        if len(r) < 1000: break
-        rate_limit()
-    print(f"    [OK] {endpoint}: {count} procesados.")
+                    # ==========================================================
+                    # NORMALIZACIÓN FINANCIERA (MISMA LÓGICA BINGX)
+                    # ==========================================================
+
+                    if income_type == "REALIZED_PNL":
+                        categoria = "TRADE"
+
+                    elif income_type in ["COMMISSION", "TRADING_FEE"]:
+                        categoria = "FEE"
+
+                    elif income_type == "FUNDING_FEE":
+                        categoria = "FUNDING"
+
+                    elif income_type in [
+                        "TRANSFER",
+                        "INTERNAL_TRANSFER"
+                    ]:
+                        categoria = "TRANSFER"
+
+                    else:
+                        categoria = "OTHER"
+
+                    registrar_cashflow(cursor, {
+                        "user_id": user_id,
+                        "broker": "BINANCE",
+                        "tipo_evento": categoria,
+                        "asset": i["asset"],
+                        "cantidad": float(i["income"]),
+                        "ticker_motor": i.get("symbol"),
+                        "fecha": time.strftime(
+                            '%Y-%m-%d %H:%M:%S',
+                            time.gmtime(ts / 1000)
+                        ),
+                        "id_externo": (
+                            f"{user_id}-BN-INC-"
+                            f"{i['tranId']}"
+                        ),
+                        "raw": json.dumps(i)
+                    })
+
+                    count += 1
+
+                    if ts > max_ts_global:
+                        max_ts_global = ts
+
+            start_ts = chunk_end + 1
+
+            nuevo_sync = max(max_ts_global, chunk_end)
+
+            guardar_sync(
+                cursor,
+                user_id,
+                "BINANCE",
+                endpoint,
+                nuevo_sync
+            )
+
+            db.commit()
+
+            rate_limit()
+
+        except Exception as e:
+
+            print(f"\n    [!] Error en bloque Binance Income: {e}")
+
+            break
+
+    print(
+        f"\n    [OK] {endpoint}: "
+        f"{count} registros históricos procesados."
+    )
 
 # ==========================================================
 # SECCIÓN MODIFICADA: DEPÓSITOS Y RETIROS (FILTRO BINANCE PAY)
@@ -391,8 +518,16 @@ def binance_deposits(db, user_id, key, secret):
 
         start_ts = chunk_end + 1
 
-        if max_ts_global > last_sync:
-            guardar_sync(cursor, user_id, "BINANCE", endpoint, max_ts_global)
+        nuevo_sync = max(max_ts_global, chunk_end)
+
+        guardar_sync(
+            cursor,
+            user_id,
+            "BINANCE",
+            endpoint,
+            nuevo_sync
+        )
+
 
         db.commit()
 
@@ -475,8 +610,15 @@ def binance_withdraw(db, user_id, key, secret):
 
         start_ts = chunk_end + 1
 
-        if max_ts_global > last_sync:
-            guardar_sync(cursor, user_id, "BINANCE", endpoint, max_ts_global)
+        nuevo_sync = max(max_ts_global, chunk_end)
+
+        guardar_sync(
+            cursor,
+            user_id,
+            "BINANCE",
+            endpoint,
+            nuevo_sync
+        )
 
         db.commit()
 
@@ -534,15 +676,35 @@ def binance_dust_log(db, uid, key, secret):
                                 "id_externo": f"{uid}-BN-DUST-{detail['transId']}-{asset_s}", 
                                 "raw": json.dumps(detail)
                             })
-                    
-                    asset_e = entry.get("operatingAsset", "BNB")
+
+                    # ==========================================================
+                    # DUST_IN (Asset recibido REAL)
+                    # ==========================================================
+
+                    target_asset = None
+
+                    if (
+                        "userAssetDribbletDetails" in entry
+                        and len(entry["userAssetDribbletDetails"]) > 0
+                    ):
+                        target_asset = entry["userAssetDribbletDetails"][0].get("targetAsset")
+
+                    # Fallback defensivo
+                    if not target_asset:
+                        target_asset = entry.get("operatingAsset", "BNB")
+
                     registrar_cashflow(cursor, {
-                        "user_id": uid, "broker": "BINANCE", "tipo_evento": "DUST_IN",
-                        "asset": asset_e, "cantidad": float(entry["totalTransferedAmount"]), 
-                        "ticker_motor": None, "fecha": fecha, 
-                        "id_externo": f"{uid}-BN-DUST-{ts}-IN", 
+                        "user_id": uid,
+                        "broker": "BINANCE",
+                        "tipo_evento": "DUST_IN",
+                        "asset": target_asset,
+                        "cantidad": float(entry["totalTransferedAmount"]),
+                        "ticker_motor": None,
+                        "fecha": fecha,
+                        "id_externo": f"{uid}-BN-DUST-{ts}-{target_asset}-IN",
                         "raw": json.dumps(entry)
-                    })
+                    })                    
+
                     count_bloque += 1
                 
                 if count_bloque > 0:
@@ -732,77 +894,269 @@ def binance_mining(db, user_id, key, secret):
 
 
 
+# ==========================================================
+# 🛡️ SAFE TIMESTAMP PARSER
+# ==========================================================
+def safe_timestamp(value):
+
+    if value is None:
+        return 0
+
+    try:
+
+        # timestamp numérico
+        if isinstance(value, (int, float)):
+            return int(value)
+
+        value = str(value).strip()
+
+        if value == "":
+            return 0
+
+        # timestamp string numérico
+        if value.isdigit():
+            return int(value)
+
+        # formato fecha SQL
+        dt = datetime.strptime(
+            value,
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+        return int(
+            dt.replace(
+                tzinfo=timezone.utc
+            ).timestamp() * 1000
+        )
+
+    except:
+        return 0
+
 
 # ==========================================================
 # 🔌 BINGX FUNCTIONS
 # ==========================================================
 
-
+# ==========================================================
+# 🔌 BINGX INCOME (VERSIÓN FINAL ESTABLE)
+# ==========================================================
 def bingx_income(db, user_id, key, secret):
+
     cursor = db.cursor(dictionary=True)
+
     endpoint = "BINGX_INCOME"
-    last_sync = obtener_sync(cursor, user_id, "BINGX", endpoint)
 
-    print(f"    [+] {endpoint}: Sincronizando desde TS {last_sync}...")
+    last_sync = obtener_sync(
+        cursor,
+        user_id,
+        "BINGX",
+        endpoint
+    )
 
-    params = {"limit": 100, "timestamp": int(time.time()*1000)}
-    query = urlencode(params)
-    sig = hmac.new(secret.encode(), query.encode(), hashlib.sha256).hexdigest()
-    url = f"https://open-api.bingx.com/openApi/swap/v2/user/income?{query}&signature={sig}"
+    # OCTUBRE 2022
+    start_ts = (
+        last_sync + 1
+        if last_sync > 0
+        else 1664582400000
+    )
 
-    try:
-        r = requests.get(url, headers=get_headers_bingx(key)).json()
-    except Exception as e:
-        print(f"    [!] Error conexión BingX Income: {e}")
-        return
+    end_now = int(time.time() * 1000)
+
+    print(f"    [+] {endpoint}: Reconstruyendo histórico Futures...")
 
     count = 0
-    max_ts = last_sync   
+    max_ts_global = last_sync
 
-    if r.get("code") == 0 and r.get("data"):
-        for i in r["data"]:
-            ts = int(i["time"])
-            if ts <= last_sync:
-                continue
+    while start_ts < end_now:
 
-            asset = i["asset"]
-            symbol = i.get("symbol", asset)
-            monto = float(i["income"])
-            tipo_api = i["incomeType"]
+        # bloques de 30 días
+        chunk_end = start_ts + (30 * 24 * 60 * 60 * 1000)
 
-            fecha_sql = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts/1000))
-            id_ext = f"{user_id}-BX-INC-{ts}-{asset}-{tipo_api}"
+        if chunk_end > end_now:
+            chunk_end = end_now
 
-            if tipo_api == "REALIZED_PNL":
-                categoria = "TRADE"
-            elif tipo_api in ["TRADING_FEE", "COMMISSION"]:
-                categoria = "FEE"
-            elif tipo_api == "FUNDING_FEE":
-                categoria = "FUNDING"
-            else:
-                categoria = "OTHER"
+        fecha_h = time.strftime(
+            '%Y-%m-%d',
+            time.gmtime(start_ts / 1000)
+        )
 
-            registrar_cashflow(cursor, {
-                "user_id": user_id,
-                "broker": "BINGX",
-                "tipo_evento": categoria,
-                "asset": asset,
-                "cantidad": monto,
-                "ticker_motor": symbol,
-                "fecha": fecha_sql,
-                "id_externo": id_ext,
-                "raw": json.dumps(i)
-            })
+        print(
+            f"        [..] Income: Escaneando desde {fecha_h}...",
+            end="\r"
+        )
 
-            if ts > max_ts:
-                max_ts = ts
+        params = {
+            "startTime": start_ts,
+            "endTime": chunk_end,
+            "limit": 1000,
+            "timestamp": int(time.time() * 1000)
+        }
 
-            count += 1
+        query = urlencode(params)
 
+        sig = hmac.new(
+            secret.encode(),
+            query.encode(),
+            hashlib.sha256
+        ).hexdigest()
 
-        guardar_sync(cursor, user_id, "BINGX", endpoint, max_ts)
-    
-    print(f"    [OK] {endpoint}: {count} procesados. Nuevo TS: {max_ts}")
+        url = (
+            "https://open-api.bingx.com"
+            "/openApi/swap/v2/user/income"
+            f"?{query}&signature={sig}"
+        )
+
+        try:
+
+            r = requests.get(
+                url,
+                headers=get_headers_bingx(key),
+                timeout=90
+            ).json()
+
+            income_list = []
+
+            # ==========================================================
+            # NORMALIZACIÓN RESPUESTA API
+            # ==========================================================
+
+            if isinstance(r, dict):
+
+                if r.get("code") == 0:
+
+                    if isinstance(r.get("data"), dict):
+                        income_list = r["data"].get("list", [])
+
+                    elif isinstance(r.get("data"), list):
+                        income_list = r["data"]
+
+            elif isinstance(r, list):
+                income_list = r
+
+            # ==========================================================
+            # PROCESAMIENTO
+            # ==========================================================
+
+            for i in income_list:
+
+                ts = safe_timestamp(
+                    i.get("time")
+                )
+
+                if ts <= 0:
+                    continue
+
+                if ts <= last_sync:
+                    continue
+
+                asset = (
+                    i.get("asset")
+                    or i.get("currency")
+                    or "USDT"
+                )
+
+                symbol = (
+                    i.get("symbol")
+                    or asset
+                )
+
+                monto = float(
+                    i.get("income", 0)
+                )
+
+                tipo_api = (
+                    i.get("incomeType")
+                    or i.get("type")
+                    or "OTHER"
+                )
+
+                # ==========================================================
+                # NORMALIZACIÓN FINANCIERA
+                # ==========================================================
+
+                if tipo_api == "REALIZED_PNL":
+                    categoria = "TRADE"
+
+                elif tipo_api in [
+                    "TRADING_FEE",
+                    "COMMISSION"
+                ]:
+                    categoria = "FEE"
+
+                elif tipo_api == "FUNDING_FEE":
+                    categoria = "FUNDING"
+
+                elif tipo_api in [
+                    "TRANSFER",
+                    "INTERNAL_TRANSFER"
+                ]:
+                    categoria = "TRANSFER"
+
+                else:
+                    categoria = "OTHER"
+
+                fecha_sql = time.strftime(
+                    '%Y-%m-%d %H:%M:%S',
+                    time.gmtime(ts / 1000)
+                )
+
+                tran_id = (
+                    i.get("tranId")
+                    or i.get("id")
+                    or ts
+                )
+
+                id_ext = (
+                    f"{user_id}-BX-INC-"
+                    f"{tran_id}-{asset}-{tipo_api}"
+                )
+
+                registrar_cashflow(cursor, {
+                    "user_id": user_id,
+                    "broker": "BINGX",
+                    "tipo_evento": categoria,
+                    "asset": asset,
+                    "cantidad": monto,
+                    "ticker_motor": symbol,
+                    "fecha": fecha_sql,
+                    "id_externo": id_ext,
+                    "raw": json.dumps(i)
+                })
+
+                count += 1
+
+                if ts > max_ts_global:
+                    max_ts_global = ts
+
+            # avanzar bloque
+            start_ts = chunk_end + 1
+
+            # guardar progreso real
+            guardar_sync(
+                cursor,
+                user_id,
+                "BINGX",
+                endpoint,
+                max_ts_global
+            )
+
+            db.commit()
+
+            rate_limit()
+
+        except Exception as e:
+
+            print(
+                f"\n    [!] Error en bloque BingX Income: {e}"
+            )
+
+            break
+
+    print(
+        f"\n    [OK] {endpoint}: "
+        f"{count} registros históricos procesados."
+    )
+
 
 # ==========================================================
 # 🔌 BINGX DEPOSITS
@@ -813,9 +1167,19 @@ def bingx_deposits(db, user_id, key, secret):
 
     endpoint = "BINGX_DEPOSIT"
 
-    last_sync = obtener_sync(cursor, user_id, "BINGX", endpoint)
+    last_sync = obtener_sync(
+        cursor,
+        user_id,
+        "BINGX",
+        endpoint
+    )
 
-    start_ts = last_sync + 1 if last_sync > 0 else 1601510400000  # 2021-01-01
+    start_ts = (
+        last_sync + 1
+        if last_sync > 0
+        else 1601510400000
+    )
+
     end_now = int(time.time() * 1000)
 
     print(f"    [+] {endpoint}: Reconstruyendo histórico...")
@@ -825,14 +1189,20 @@ def bingx_deposits(db, user_id, key, secret):
 
     while start_ts < end_now:
 
-        chunk_end = start_ts + (90 * 24 * 60 * 60 * 1000)
+        chunk_end = start_ts + (30 * 24 * 60 * 60 * 1000)
 
         if chunk_end > end_now:
             chunk_end = end_now
 
-        fecha_h = time.strftime('%Y-%m-%d', time.gmtime(start_ts / 1000))
+        fecha_h = time.strftime(
+            '%Y-%m-%d',
+            time.gmtime(start_ts / 1000)
+        )
 
-        print(f"        [..] Deposit: Escaneando desde {fecha_h}...", end="\r")
+        print(
+            f"        [..] Deposit: Escaneando desde {fecha_h}...",
+            end="\r"
+        )
 
         params = {
             "startTime": start_ts,
@@ -848,56 +1218,83 @@ def bingx_deposits(db, user_id, key, secret):
             hashlib.sha256
         ).hexdigest()
 
-        url = f"https://open-api.bingx.com/openApi/api/v3/capital/deposit/hisrec?{query}&signature={sig}"
+        url = (
+            "https://open-api.bingx.com"
+            "/openApi/api/v3/capital/deposit/hisrec"
+            f"?{query}&signature={sig}"
+        )
 
         try:
 
             r = requests.get(
                 url,
                 headers=get_headers_bingx(key),
-                timeout=30
+                timeout=90
             ).json()
 
-            if isinstance(r, list):
+            #print(json.dumps(r)[:1500])
 
-                for d in r:
+            deposit_list = []
 
-                    ts = int(d.get("insertTime", 0))
+            if isinstance(r, dict):
 
-                    fecha_sql = time.strftime(
-                        '%Y-%m-%d %H:%M:%S',
-                        time.gmtime(ts / 1000)
-                    )
+                if "data" in r:
 
-                    txid = d.get("txId", f"NO-TX-{ts}")
+                    if isinstance(r["data"], dict):
+                        deposit_list = r["data"].get("list", [])
 
-                    registrar_cashflow(cursor, {
-                        "user_id": user_id,
-                        "broker": "BINGX",
-                        "tipo_evento": "DEPOSIT",
-                        "asset": d["coin"],
-                        "cantidad": float(d["amount"]),
-                        "ticker_motor": None,
-                        "fecha": fecha_sql,
-                        "id_externo": f"{user_id}-BX-DEP-{txid}",
-                        "raw": json.dumps(d)
-                    })
+                    elif isinstance(r["data"], list):
+                        deposit_list = r["data"]
 
-                    count += 1
+            elif isinstance(r, list):
+                deposit_list = r
 
-                    if ts > max_ts_global:
-                        max_ts_global = ts
+            for d in deposit_list:
+
+                ts = safe_timestamp(
+                    d.get("insertTime")
+                )
+
+                if ts <= 0:
+                    continue
+
+                fecha_sql = time.strftime(
+                    '%Y-%m-%d %H:%M:%S',
+                    time.gmtime(ts / 1000)
+                )
+
+                txid = d.get(
+                    "txId",
+                    f"NO-TX-{ts}"
+                )
+
+                registrar_cashflow(cursor, {
+                    "user_id": user_id,
+                    "broker": "BINGX",
+                    "tipo_evento": "DEPOSIT",
+                    "asset": d.get("coin"),
+                    "cantidad": float(d.get("amount", 0)),
+                    "ticker_motor": None,
+                    "fecha": fecha_sql,
+                    "id_externo": f"{user_id}-BX-DEP-{txid}",
+                    "raw": json.dumps(d)
+                })
+
+                count += 1
+
+                if ts > max_ts_global:
+                    max_ts_global = ts
 
             start_ts = chunk_end + 1
 
-            if max_ts_global > last_sync:
-                guardar_sync(
-                    cursor,
-                    user_id,
-                    "BINGX",
-                    endpoint,
-                    max_ts_global
-                )
+            # ✅ SOLO avanzamos realmente procesado
+            guardar_sync(
+                cursor,
+                user_id,
+                "BINGX",
+                endpoint,
+                max_ts_global
+            )
 
             db.commit()
 
@@ -905,12 +1302,16 @@ def bingx_deposits(db, user_id, key, secret):
 
         except Exception as e:
 
-            print(f"\n    [!] Error en bloque BingX Deposit: {e}")
+            print(
+                f"\n    [!] Error en bloque BingX Deposit: {e}"
+            )
 
             break
 
-    print(f"\n    [OK] {endpoint}: {count} registros históricos procesados.")
-
+    print(
+        f"\n    [OK] {endpoint}: "
+        f"{count} registros históricos procesados."
+    )
 # ==========================================================
 # 🔌 BINGX WITHDRAW
 # ==========================================================
@@ -920,9 +1321,19 @@ def bingx_withdraw(db, user_id, key, secret):
 
     endpoint = "BINGX_WITHDRAW"
 
-    last_sync = obtener_sync(cursor, user_id, "BINGX", endpoint)
+    last_sync = obtener_sync(
+        cursor,
+        user_id,
+        "BINGX",
+        endpoint
+    )
 
-    start_ts = last_sync + 1 if last_sync > 0 else 1601510400000 # 2021-01-01
+    start_ts = (
+        last_sync + 1
+        if last_sync > 0
+        else 1601510400000
+    )
+
     end_now = int(time.time() * 1000)
 
     print(f"    [+] {endpoint}: Reconstruyendo histórico...")
@@ -932,14 +1343,20 @@ def bingx_withdraw(db, user_id, key, secret):
 
     while start_ts < end_now:
 
-        chunk_end = start_ts + (90 * 24 * 60 * 60 * 1000)
+        chunk_end = start_ts + (30 * 24 * 60 * 60 * 1000)
 
         if chunk_end > end_now:
             chunk_end = end_now
 
-        fecha_h = time.strftime('%Y-%m-%d', time.gmtime(start_ts / 1000))
+        fecha_h = time.strftime(
+            '%Y-%m-%d',
+            time.gmtime(start_ts / 1000)
+        )
 
-        print(f"        [..] Withdraw: Escaneando desde {fecha_h}...", end="\r")
+        print(
+            f"        [..] Withdraw: Escaneando desde {fecha_h}...",
+            end="\r"
+        )
 
         params = {
             "startTime": start_ts,
@@ -955,61 +1372,80 @@ def bingx_withdraw(db, user_id, key, secret):
             hashlib.sha256
         ).hexdigest()
 
-        url = f"https://open-api.bingx.com/openApi/api/v3/capital/withdraw/history?{query}&signature={sig}"
+        url = (
+            "https://open-api.bingx.com"
+            "/openApi/api/v3/capital/withdraw/history"
+            f"?{query}&signature={sig}"
+        )
 
         try:
 
             r = requests.get(
                 url,
                 headers=get_headers_bingx(key),
-                timeout=30
+                timeout=90
             ).json()
 
-            if isinstance(r, list):
+            withdraw_list = []
 
-                for w in r:
+            if isinstance(r, dict):
 
-                    apply_time = w.get("applyTime")
+                if "data" in r:
 
-                    if isinstance(apply_time, str):
-                        fecha_sql = apply_time
-                        ts = int(time.time() * 1000)
-                    else:
-                        ts = int(apply_time)
-                        fecha_sql = time.strftime(
-                            '%Y-%m-%d %H:%M:%S',
-                            time.gmtime(ts / 1000)
-                        )
+                    if isinstance(r["data"], dict):
+                        withdraw_list = r["data"].get("list", [])
 
-                    wid = w.get("id", f"NOID-{ts}")
+                    elif isinstance(r["data"], list):
+                        withdraw_list = r["data"]
 
-                    registrar_cashflow(cursor, {
-                        "user_id": user_id,
-                        "broker": "BINGX",
-                        "tipo_evento": "WITHDRAW",
-                        "asset": w["coin"],
-                        "cantidad": -float(w["amount"]),
-                        "ticker_motor": None,
-                        "fecha": fecha_sql,
-                        "id_externo": f"{user_id}-BX-WITH-{wid}",
-                        "raw": json.dumps(w)
-                    })
+            elif isinstance(r, list):
+                withdraw_list = r
 
-                    count += 1
+            for w in withdraw_list:
 
-                    if ts > max_ts_global:
-                        max_ts_global = ts
+                ts = safe_timestamp(
+                    w.get("applyTime")
+                )
+
+                if ts <= 0:
+                    continue
+
+                fecha_sql = time.strftime(
+                    '%Y-%m-%d %H:%M:%S',
+                    time.gmtime(ts / 1000)
+                )
+
+                wid = w.get(
+                    "id",
+                    f"NOID-{ts}"
+                )
+
+                registrar_cashflow(cursor, {
+                    "user_id": user_id,
+                    "broker": "BINGX",
+                    "tipo_evento": "WITHDRAW",
+                    "asset": w.get("coin"),
+                    "cantidad": -float(w.get("amount", 0)),
+                    "ticker_motor": None,
+                    "fecha": fecha_sql,
+                    "id_externo": f"{user_id}-BX-WITH-{wid}",
+                    "raw": json.dumps(w)
+                })
+
+                count += 1
+
+                if ts > max_ts_global:
+                    max_ts_global = ts
 
             start_ts = chunk_end + 1
 
-            if max_ts_global > last_sync:
-                guardar_sync(
-                    cursor,
-                    user_id,
-                    "BINGX",
-                    endpoint,
-                    max_ts_global
-                )
+            guardar_sync(
+                cursor,
+                user_id,
+                "BINGX",
+                endpoint,
+                max_ts_global
+            )
 
             db.commit()
 
@@ -1017,11 +1453,17 @@ def bingx_withdraw(db, user_id, key, secret):
 
         except Exception as e:
 
-            print(f"\n    [!] Error en bloque BingX Withdraw: {e}")
+            print(
+                f"\n    [!] Error en bloque BingX Withdraw: {e}"
+            )
 
             break
 
-    print(f"\n    [OK] {endpoint}: {count} registros históricos procesados.")
+    print(
+        f"\n    [OK] {endpoint}: "
+        f"{count} registros históricos procesados."
+    )
+
 
 def normalizar_cashflows_pendientes(db, user_id):
     cursor = db.cursor(dictionary=True)
@@ -1079,7 +1521,7 @@ def ejecutar_motor_financiero(db):
     db.commit()
 
     print(f"\n{'='*60}")
-    print(f"💎 MOTOR FINANCIERO v1.3.6 - AUDITORÍA Y DIVIDENDOS")
+    print(f"💎 MOTOR FINANCIERO v1.3.8 - AUDITORÍA Y DIVIDENDOS")
     print(f"{'='*60}")
     
     try:
@@ -1107,6 +1549,7 @@ def ejecutar_motor_financiero(db):
                 binance_withdraw(db, u['user_id'], k, s)
                 binance_convert_history(db, u['user_id'], k, s)
                 binance_dust_log(db, u['user_id'], k, s)
+                # binance_transfers(db, u['user_id'], k, s)
 
             elif broker == "BINGX":
                 bingx_income(db, u['user_id'], k, s)
