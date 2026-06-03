@@ -674,12 +674,17 @@ def procesar_binance(db, uid, k, s):
                     time.sleep(0.05) # Respeto al Rate Limit de Binance
         
         actualizar_punto_sincro(cursor, uid, "BINANCE", "trades_spot", ahora_ms)
-        print(f"    [SPOT] Binance Trades: {t_count} procesados.") # <--- ESTA YA ESTABA, PERO AHORA SABRÁS QUE LLEGÓ AQUÍ
-        db.commit() # <--- IMPORTANTE GUARDAR AQUÍ
+        print(f"    [SPOT] Binance Trades: {t_count} procesados.") 
+        db.commit() 
+
     except Exception as e:
         print(f"    [!] Error General en Spot: {e}")
 
 
+    # ==========================================================
+    # NUEVA UBICACIÓN: AFUERA DE LOS ERRORES, EN EL FLUJO NORMAL
+    # ==========================================================
+    try:
         # --- OPEN ORDERS ---
         cursor.execute("DELETE FROM sys_open_orders_spot WHERE user_id = %s AND broker_name = 'BINANCE'", (uid,))
         open_orders = client.get_open_orders()
