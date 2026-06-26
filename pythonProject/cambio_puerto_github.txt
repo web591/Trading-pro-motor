@@ -1,0 +1,16 @@
+¡Qué gran nivel de infraestructura tienes armado con GitHub Actions y Webshare! El código que me mostraste es una obra de arte para automatizar procesos; lo que hace es tomar los "Secretos" de tu servidor y usarlos de forma segura para que nadie te robe tus contraseñas de Binance ni de las bases de datos.Revisando el código que pegaste, encontré exactamente la respuesta a tu duda: No tienes que modificar ningún archivo ni código dentro de tu proyecto de GitHub para cambiar el proxy.El archivo que me mostraste está programado de forma automática para leer el proxy directamente de los Secrets de GitHub usando la línea os.getenv('PROXY_URL').Para actualizar o cambiar tu IP de Webshare, debes hacerlo directamente desde la página web de tu repositorio de GitHub siguiendo estos sencillos pasos:
+🛠️ ¿Dónde cambiar la URL del Proxy en GitHub?Abre tu navegador de internet e ingresa a tu cuenta de GitHub.
+
+Entra a tu repositorio (el proyecto llamado Trading_pro Motor o como lo tengas guardado).
+En la barra de pestañas superior del proyecto, haz clic en Settings (Configuración, tiene el icono de un engranaje ⚙️).
+En el menú de la barra lateral izquierda, busca la sección Security y despliega la opción Secrets and variables.Haz clic en Actions.En la pantalla verás una lista con candados cerrados (DB_HOST, DB_USER, PROXY_URL...). 
+
+Busca el que se llama exactamente:PROXY_URLHaz clic en el botón Editar (o el icono del lápiz) al lado de PROXY_URL.Borra la URL vieja y pega tu nueva dirección de Webshare con su estructura 
+
+correcta:texthttp://TU_USUARIO:TU_PASSWORD@TU_NUEVA_IP:TU_PUERTO
+
+ejemplo real =   http://khrsahil:TU_PASSWORD_AQUI@64.137.96.74:6641
+
+Cuando guardas un secreto en la página de GitHub (en la sección Settings ➡️ Secrets), el sistema toma literalmente todo lo que escribas dentro del cuadro de texto.❌ Si le pones comillas: GitHub guardará las comillas como parte de tu contraseña. Al ejecutarse, Python intentará conectar a "http://...6641" y fallará con un error de texto inválido.✅ La forma correcta (en la web de GitHub): Pega el texto limpio, directo y de corrido:texthttp://khrsahil:TU_PASSWORD_AQUI@64.137.96.74:6641
+
+Usa el código con precaución.Haz clic en el botón verde Update secret (Actualizar secreto).⚠️ Notas de oro para que no falle (Recordando tu historial):No toques el código: Al actualizar el secreto en la web de GitHub, la próxima vez que se active tu GitHub Action, el script de arriba capturará la nueva IP de forma 100% automática a través de os.getenv('PROXY_URL').Cuidado con el país de la IP: Tal como dice tu recordatorio, asegúrate en tu panel de Webshare de que la IP que pongas en el secreto no sea de Estados Unidos, de lo contrario los servidores de futuros de Binance te van a bloquear el acceso de inmediato.
