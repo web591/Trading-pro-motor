@@ -17,5 +17,6 @@ Usa el código con precaución.Con esto, tu documento queda completamente blinda
 # Ejecuta esto en la terminal para volver a encender las letras verdes:
 & "C:\entorno_trading\Scripts\Activate.ps1"
 
-Para caneclar es 
+Para cancelar es 
+
 deactivate
