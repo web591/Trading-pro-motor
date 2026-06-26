@@ -5,3 +5,17 @@ Usa el código con precaución.(Verás aparecer el indicador (entorno_trading) e
 Usa el código con precaución.El truco de oro (Instalar conectores avanzados sin pisar carpetas):Añadir el parámetro --no-deps obliga a Python a fusionar ambas librerías dentro de la misma carpeta física de binance:powershellpip install binance-connector binance-futures-connector --no-deps
 Usa el código con precaución.PASO 5: Verificación de OroAntes de correr cualquier script, asegúrate de que ambos motores tienen acceso a sus respectivas librerías ejecutando esta prueba rápida en la terminal:powershellpython -c "from binance.client import Client; from binance.um_futures import UMFutures; print('✅ TODO OK: Ambos motores pueden correr')"
 Usa el código con precaución.Si te devuelve el mensaje ✅ TODO OK, el sistema está perfectamente configurado.PASO 6: Enlazar el Botón "Play" de PyCharmPara que la flecha verde de ejecución use siempre tu nuevo entorno rápido del disco C:Ve a la esquina inferior derecha de PyCharm y haz clic en el texto del intérprete de Python.Selecciona Add New Interpreter ➡️ Add Local Interpreter....Elige Virtualenv Environment y marca la casilla Existing.Haz clic en los tres puntos (...), busca tu Disco Local C: ➡️ carpeta entorno_trading ➡️ Scripts ➡️ selecciona el archivo python.exe.Haz clic en OK para guardar.⚠️ Historial de Errores Solucionados (Para recordar si vuelven a pasar):ModuleNotFoundError: No module named 'binance.um_futures': Ocurre si instalas las librerías en comandos separados sin el parámetro --no-deps. La última borra la carpeta de la primera.ssl.SSLEOFError: UNEXPECTED_EOF_WHILE_READING: Ocurre si usas versiones experimentales como Python 3.14 o si dejas el entorno virtual dentro de Google Drive (G:\), ya que la sincronización en la nube interrumpe el protocolo seguro SSL de Binance.ERROR: Could not find vswhere.exe / metadata-generation-failed: Ocurre si descargas accidentalmente la versión de Python de 32 bits. Módulos modernos como Pandas de 64 bits exigen compilar código si detectan un sistema viejo
+
+
+
+
+Enmienda al Manual: Reglas de Oro sobre el Encendido y Cierre del Entorno📌 Regla 1: Al cerrar y abrir PyCharm (Comportamiento Automático)¿Qué pasa al cerrar el programa? Puedes cerrar PyCharm con la X de Windows en cualquier momento. No necesitas escribir deactivate. Windows apaga todo de forma segura.¿Qué pasa al volverlo a abrir? PyCharm es inteligente. Al abrirse, el botón Play (la flecha verde) funcionará de inmediato porque recuerda la ruta del disco C. Sin embargo, la terminal de abajo a veces se abre "apagada" (sin las letras verdes).📌 Regla 2: ¿Cómo reaccionar si el entorno de la terminal no está activo?Si abres la terminal (o si por accidente escribiste deactivate) y notas que el texto de la izquierda NO dice (entorno_trading), tus comandos manuales fallarán. Para solucionarlo en un segundo, solo debes copiar y pegar tu comando de encendido:powershell# Ejecuta esto en la terminal para volver a encender las letras verdes:
+& "C:\entorno_trading\Scripts\Activate.ps1"
+Usa el código con precaución.Con esto, tu documento queda completamente blindado para cualquier situación. Ya tienes la total seguridad de que tu sistema no se va a desconfigurar por cerrar el programa o por limpiar la consola.
+
+
+# Ejecuta esto en la terminal para volver a encender las letras verdes:
+& "C:\entorno_trading\Scripts\Activate.ps1"
+
+Para caneclar es 
+deactivate
