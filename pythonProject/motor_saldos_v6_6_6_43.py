@@ -612,6 +612,11 @@ def procesar_binance(db, uid, k, s):
             total = float(b['free']) + float(b['locked'])
             if total > 0.000001:
                 info = obtener_traductor_id_universal(cursor, "binance_spot", b['asset'])
+                
+                # Si el token nuevo no existe en el sistema, encendemos el Radar
+                if not info:
+                    disparar_radar(cursor, uid, b['asset'], "SALDO_SPOT_NUEVO")
+                    
                 registrar_saldo(cursor, uid, info, total, float(b['locked']), b['asset'], "BINANCE", "SPOT")
         db.commit()
 
